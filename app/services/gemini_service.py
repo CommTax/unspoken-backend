@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import google.generativeai as genai
 from typing import Dict, Any
 from app.models.schemas import CommunicationAnalysis, DimensionFeedback
@@ -16,80 +17,78 @@ class GeminiService:
             }
         )
         
-        self.ANALYSIS_PROMPT = """
-You are an executive communication coach with 20 years of experience. Analyze this transcript and return ONLY valid JSON.
+        self.ANALYSIS_PROMPT = """Analyze this transcript. Return ONLY valid JSON. No markdown, no explanations, no extra text.
 
 Transcript: {transcript}
 
-Evaluate the speaker on these 4 dimensions:
-1. Thinking - Quality of ideas, reasoning depth, mental clarity, and strategic perspective
-2. Structure - Organization, logical flow, and how ideas are sequenced
-3. Clarity - How clearly the message is communicated, precision of language, freedom from ambiguity
-4. Influence - Ability to persuade, create conviction, drive action, and inspire confidence
+Return JSON exactly like this. Use these exact keys. For ratings, use only: "Strong", "Good", "Needs Work", or "Critical Gap".
 
-Output must be exactly this format:
 {
-    "overall_comment": "A 2-3 sentence summary of where this person stands as a communicator overall.",
+    "overall_comment": "2-3 sentence summary",
     "thinking": {
-        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
-        "feedback": "Specific, actionable feedback about their thinking quality."
+        "rating": "Strong",
+        "feedback": "feedback text"
     },
     "structure": {
-        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
-        "feedback": "Specific, actionable feedback about their structure."
+        "rating": "Strong",
+        "feedback": "feedback text"
     },
     "clarity": {
-        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
-        "feedback": "Specific, actionable feedback about their clarity."
+        "rating": "Strong",
+        "feedback": "feedback text"
     },
     "influence": {
-        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
-        "feedback": "Specific, actionable feedback about their influence."
+        "rating": "Strong",
+        "feedback": "feedback text"
     },
-    "good_points": ["What they're doing well - point 1", "point 2", "point 3"],
-    "areas_to_cover": ["What they need to work on - point 1", "point 2", "point 3"],
-    "follow_up_questions": ["Question 1 to understand their communication context better", "Question 2"]
-}
-
-Be brutally honest but constructive. Give specific examples from the transcript where possible.
-Return ONLY the JSON. No other text.
-"""
+    "good_points": ["point1", "point2", "point3"],
+    "areas_to_cover": ["area1", "area2", "area3"],
+    "follow_up_questions": ["q1", "q2"]
+}"""
 
     def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
         try:
+            # Use .replace() instead of .format() to avoid conflicts with JSON braces
             prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript)
             response = self.model.generate_content(prompt)
             
-            # Log the raw response for debugging
-            print(f"Raw response: {response.text}")
+            raw_text = response.text
+            print(f"=== RAW RESPONSE ===")
+            print(repr(raw_text))
+            print("=== END RAW ===")
             
-            text = response.text
+            text = raw_text.strip()
+            
+            # Remove markdown code blocks
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0]
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0]
             
-            result = json.loads(text.strip())
+            # Find JSON using regex
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if json_match:
+                text = json_match.group(0)
+            
+            text = text.strip()
+            print(f"=== CLEANED TEXT ===")
+            print(repr(text))
+            print("=== END CLEANED ===")
+            
+            result = json.loads(text)
             validated = CommunicationAnalysis(**result)
             
             return {"success": True, "analysis": validated.model_dump()}
         except Exception as e:
+            print(f"=== ERROR ===")
             print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def get_follow_up(self, transcript: str, context: str) -> str:
-        """Generate a natural language follow-up response"""
         try:
-            prompt = f"""
-Based on this communication transcript: "{transcript}"
-
-Context: {context}
-
-Generate a natural, conversational follow-up response that asks 1-2 relevant follow-up questions 
-to better understand the user's communication style or situation.
-
-Be empathetic, professional, and genuinely curious. Keep it under 3 sentences total.
-"""
+            prompt = f"Based on this transcript: '{transcript}' Context: {context}. Generate a natural follow-up response with 1-2 questions. Keep it under 3 sentences. Return only the text."
             response = self.model.generate_content(prompt)
             return response.text
         except Exception as e:

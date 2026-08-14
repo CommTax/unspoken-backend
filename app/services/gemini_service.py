@@ -9,11 +9,11 @@ class GeminiService:
     def __init__(self):
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         self.model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",  # Updated to available model
+            model_name="models/gemini-flash-latest",
             generation_config={
                 "temperature": 0.7,
                 "top_p": 0.95,
-                "max_output_tokens": 2048,
+                "max_output_tokens": 65536,
             }
         )
         

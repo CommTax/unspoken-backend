@@ -57,7 +57,7 @@ Return ONLY the JSON. No other text.
 
     def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
         try:
-            prompt = self.ANALYSIS_PROMPT.format(transcript=transcript)
+            prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript)
             response = self.model.generate_content(prompt)
             
             # Log the raw response for debugging

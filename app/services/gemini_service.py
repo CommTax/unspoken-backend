@@ -18,20 +18,50 @@ class GeminiService:
             }
         )
         
-        self.ANALYSIS_PROMPT = """Analyze this transcript. Address the person as "You". Return ONLY JSON.
+        self.ANALYSIS_PROMPT = """
+You are an executive communication coach with 20 years of experience. Analyze this transcript and return ONLY valid JSON.
 
 Transcript: {transcript}
 
+Evaluate the speaker on these 4 dimensions:
+1. Thinking - Quality of ideas, reasoning depth, mental clarity, and strategic perspective
+2. Structure - Organization, logical flow, and how ideas are sequenced
+3. Clarity - How clearly the message is communicated, precision of language, freedom from ambiguity
+4. Influence - Ability to persuade, create conviction, drive action, and inspire confidence
+
+IMPORTANT: Calculate the Communication Tax Score (0-100) based on these dimensions.
+- A higher score means more value is being lost in translation
+- Strong in all dimensions = Low Tax (0-20)
+- Gaps in 1-2 dimensions = Medium Tax (21-50)
+- Gaps in 3-4 dimensions = High Tax (51-100)
+
+Output must be exactly this format:
 {
     "overall_comment": "2-3 sentence summary using 'you'",
-    "thinking": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
-    "structure": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
-    "clarity": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
-    "influence": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
+    "communication_tax_score": 65,
+    "thinking": {
+        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
+        "feedback": "Specific actionable feedback about thinking using 'you'"
+    },
+    "structure": {
+        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
+        "feedback": "Specific actionable feedback about structure using 'you'"
+    },
+    "clarity": {
+        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
+        "feedback": "Specific actionable feedback about clarity using 'you'"
+    },
+    "influence": {
+        "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
+        "feedback": "Specific actionable feedback about influence using 'you'"
+    },
     "good_points": ["point1", "point2", "point3"],
     "areas_to_cover": ["area1", "area2", "area3"],
     "follow_up_questions": ["q1", "q2"]
-}"""
+}
+
+Return ONLY the JSON. No other text.
+"""
 
     def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
         try:

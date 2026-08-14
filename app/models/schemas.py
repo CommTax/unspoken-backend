@@ -19,6 +19,7 @@ class CommunicationAnalysis(BaseModel):
     structure: DimensionFeedback
     clarity: DimensionFeedback
     influence: DimensionFeedback
+    speech_analytics: SpeechAnalytics  # ✅ MUST HAVE THIS LINE
     good_points: List[str]
     areas_to_cover: List[str]
     follow_up_questions: List[str]

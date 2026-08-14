@@ -34,20 +34,24 @@ Analyze the following transcript and provide your assessment in VALID JSON forma
 Transcript: {transcript}
 """
 
-    def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
-        try:
-            prompt = self.ANALYSIS_PROMPT.format(transcript=transcript)
-            response = self.model.generate_content(prompt)
-            
-            text = response.text
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0]
-            
-            result = json.loads(text.strip())
-            validated = CommunicationAnalysis(**result)
-            
-            return {"success": True, "analysis": validated.model_dump()}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
+    try:
+        prompt = self.ANALYSIS_PROMPT.format(transcript=transcript)
+        response = self.model.generate_content(prompt)
+        
+        # Log the raw response for debugging
+        print(f"Raw response: {response.text}")
+        
+        text = response.text
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+        
+        result = json.loads(text.strip())
+        validated = CommunicationAnalysis(**result)
+        
+        return {"success": True, "analysis": validated.model_dump()}
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"success": False, "error": str(e)}

@@ -5,6 +5,13 @@ class DimensionFeedback(BaseModel):
     rating: str  # "Strong", "Good", "Needs Work", "Critical Gap"
     feedback: str  # Specific, actionable feedback for this dimension
 
+class SpeechAnalytics(BaseModel):
+    words_per_minute: int
+    filler_words_per_minute: int
+    total_words: int
+    total_fillers: int
+    filler_word_list: List[str]  # Which filler words were used
+
 class CommunicationAnalysis(BaseModel):
     # Overall assessment
     overall_comment: str  # Summary of where they stand
@@ -14,6 +21,9 @@ class CommunicationAnalysis(BaseModel):
     structure: DimensionFeedback
     clarity: DimensionFeedback
     influence: DimensionFeedback
+    
+    # Speech analytics
+    speech_analytics: SpeechAnalytics
     
     # Additional insights
     good_points: List[str]  # What they're doing well

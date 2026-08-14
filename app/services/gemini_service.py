@@ -4,45 +4,30 @@ import re
 import google.generativeai as genai
 from typing import Dict, Any, List
 from app.models.schemas import CommunicationAnalysis, DimensionFeedback, SpeechAnalytics
+import time
 
 class GeminiService:
     def __init__(self):
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         self.model = genai.GenerativeModel(
-            model_name="models/gemini-flash-latest",
+            model_name="models/gemini-flash-lite-latest",  # Faster model
             generation_config={
                 "temperature": 0.7,
                 "top_p": 0.95,
-                "max_output_tokens": 65536,
+                "max_output_tokens": 2048,  # Reduced for speed
             }
         )
         
-        self.ANALYSIS_PROMPT = """Analyze this transcript. Return ONLY valid JSON. No markdown, no explanations, no extra text.
-
-IMPORTANT: Address the person directly using "You" and "your". Do not say "the speaker" or "they". Speak directly to them.
+        self.ANALYSIS_PROMPT = """Analyze this transcript. Address the person as "You". Return ONLY JSON.
 
 Transcript: {transcript}
 
-Return JSON exactly like this. Use these exact keys. For ratings, use only: "Strong", "Good", "Needs Work", or "Critical Gap".
-
 {
-    "overall_comment": "2-3 sentence summary speaking directly to the person",
-    "thinking": {
-        "rating": "Strong",
-        "feedback": "feedback text addressing 'you'"
-    },
-    "structure": {
-        "rating": "Strong",
-        "feedback": "feedback text addressing 'you'"
-    },
-    "clarity": {
-        "rating": "Strong",
-        "feedback": "feedback text addressing 'you'"
-    },
-    "influence": {
-        "rating": "Strong",
-        "feedback": "feedback text addressing 'you'"
-    },
+    "overall_comment": "2-3 sentence summary using 'you'",
+    "thinking": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
+    "structure": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
+    "clarity": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
+    "influence": {"rating": "Strong/Good/Needs Work/Critical Gap", "feedback": "feedback using 'you'"},
     "good_points": ["point1", "point2", "point3"],
     "areas_to_cover": ["area1", "area2", "area3"],
     "follow_up_questions": ["q1", "q2"]
@@ -50,19 +35,20 @@ Return JSON exactly like this. Use these exact keys. For ratings, use only: "Str
 
     def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
         try:
-            # Calculate speech analytics
+            # Calculate speech analytics first
             speech_analytics = self._calculate_speech_analytics(transcript)
             
-            prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript)
+            # Prepare prompt
+            prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript[:500])  # Limit transcript length
+            
+            # Call Gemini with timeout
             response = self.model.generate_content(prompt)
             
             raw_text = response.text
-            print(f"=== RAW RESPONSE ===")
-            print(repr(raw_text))
-            print("=== END RAW ===")
+            print(f"Raw response: {raw_text[:200]}...")  # Log first 200 chars
             
+            # Extract JSON
             text = raw_text.strip()
-            
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0]
             elif "```" in text:
@@ -72,44 +58,27 @@ Return JSON exactly like this. Use these exact keys. For ratings, use only: "Str
             if json_match:
                 text = json_match.group(0)
             
-            text = text.strip()
-            print(f"=== CLEANED TEXT ===")
-            print(repr(text))
-            print("=== END CLEANED ===")
-            
-            result = json.loads(text)
-            
-            # Add speech analytics to the result
+            result = json.loads(text.strip())
             result["speech_analytics"] = speech_analytics.model_dump()
             
             validated = CommunicationAnalysis(**result)
-            
             return {"success": True, "analysis": validated.model_dump()}
+            
         except Exception as e:
-            print(f"=== ERROR ===")
             print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def _calculate_speech_analytics(self, transcript: str) -> SpeechAnalytics:
         """Calculate words per minute and filler word count"""
-        # Common filler words
-        filler_words = [
-            'um', 'uh', 'ah', 'er', 'like', 'you know', 'i mean', 
-            'actually', 'basically', 'literally', 'sort of', 'kind of',
-            'well', 'so', 'just', 'really', 'very'
-        ]
+        filler_words = ['um', 'uh', 'ah', 'er', 'like', 'you know', 'i mean', 'actually', 'basically', 'literally', 'sort of', 'kind of']
         
-        # Clean and split words
         words = re.findall(r'\b\w+\b', transcript.lower())
         total_words = len(words)
         
-        # Count fillers
         total_fillers = 0
         filler_list = []
         for filler in filler_words:
-            if ' ' in filler:  # Multi-word fillers like 'you know'
+            if ' ' in filler:
                 count = len(re.findall(r'\b' + re.escape(filler) + r'\b', transcript.lower()))
                 if count > 0:
                     total_fillers += count
@@ -120,13 +89,8 @@ Return JSON exactly like this. Use these exact keys. For ratings, use only: "Str
                     total_fillers += count
                     filler_list.append(filler)
         
-        # Calculate WPM (assuming 1 minute = 150 words average speaking rate)
-        # Or use actual time if available - for now we estimate
-        # 1 minute of speech ≈ 150 words
         estimated_minutes = max(1, total_words / 150)
         words_per_minute = int(total_words / estimated_minutes)
-        
-        # Calculate filler words per minute
         filler_words_per_minute = int(total_fillers / estimated_minutes)
         
         return SpeechAnalytics(

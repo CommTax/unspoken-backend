@@ -63,43 +63,43 @@ Output must be exactly this format:
 Return ONLY the JSON. No other text.
 """
 
-   def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
-    try:
-        # Calculate speech analytics first
-        speech_analytics = self._calculate_speech_analytics(transcript)
-        
-        # Prepare prompt
-        prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript[:500])
-        
-        # Call Gemini
-        response = self.model.generate_content(prompt)
-        
-        raw_text = response.text
-        print(f"Raw response: {raw_text[:200]}...")
-        
-        # Extract JSON
-        text = raw_text.strip()
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
-        
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            text = json_match.group(0)
-        
-        result = json.loads(text.strip())
-        
-        # ✅ Add speech analytics to the result
-        result["speech_analytics"] = speech_analytics.model_dump()
-        
-        # ✅ Validate with the updated schema
-        validated = CommunicationAnalysis(**result)
-        return {"success": True, "analysis": validated.model_dump()}
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        return {"success": False, "error": str(e)}
+    def analyze_transcript(self, transcript: str) -> Dict[str, Any]:
+        try:
+            # Calculate speech analytics first
+            speech_analytics = self._calculate_speech_analytics(transcript)
+            
+            # Prepare prompt
+            prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript[:500])
+            
+            # Call Gemini
+            response = self.model.generate_content(prompt)
+            
+            raw_text = response.text
+            print(f"Raw response: {raw_text[:200]}...")
+            
+            # Extract JSON
+            text = raw_text.strip()
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+            
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if json_match:
+                text = json_match.group(0)
+            
+            result = json.loads(text.strip())
+            
+            # Add speech analytics to the result
+            result["speech_analytics"] = speech_analytics.model_dump()
+            
+            # Validate with the updated schema
+            validated = CommunicationAnalysis(**result)
+            return {"success": True, "analysis": validated.model_dump()}
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            return {"success": False, "error": str(e)}
     
     def _calculate_speech_analytics(self, transcript: str) -> SpeechAnalytics:
         """Calculate words per minute and filler word count"""

@@ -10,11 +10,11 @@ class GeminiService:
     def __init__(self):
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         self.model = genai.GenerativeModel(
-            model_name="models/gemini-flash-lite-latest",  # Faster model
+            model_name="models/gemini-flash-lite-latest",
             generation_config={
                 "temperature": 0.7,
                 "top_p": 0.95,
-                "max_output_tokens": 2048,  # Reduced for speed
+                "max_output_tokens": 2048,
             }
         )
         
@@ -29,16 +29,16 @@ Evaluate the speaker on these 4 dimensions:
 3. Clarity - How clearly the message is communicated, precision of language, freedom from ambiguity
 4. Influence - Ability to persuade, create conviction, drive action, and inspire confidence
 
-IMPORTANT: Calculate the Communication Tax Score (0-100) based on these dimensions.
+IMPORTANT: Calculate the Unspoken Value Score (0-100) based on these dimensions.
 - A higher score means more value is being lost in translation
-- Strong in all dimensions = Low Tax (0-20)
-- Gaps in 1-2 dimensions = Medium Tax (21-50)
-- Gaps in 3-4 dimensions = High Tax (51-100)
+- Strong in all dimensions = Low Unspoken Value (0-20)
+- Gaps in 1-2 dimensions = Medium Unspoken Value (21-50)
+- Gaps in 3-4 dimensions = High Unspoken Value (51-100)
 
 Output must be exactly this format:
 {
     "overall_comment": "2-3 sentence summary using 'you'",
-    "communication_tax_score": 65,
+    "unspoken_value_score": 65,
     "thinking": {
         "rating": "Strong" or "Good" or "Needs Work" or "Critical Gap",
         "feedback": "Specific actionable feedback about thinking using 'you'"
@@ -69,13 +69,13 @@ Return ONLY the JSON. No other text.
             speech_analytics = self._calculate_speech_analytics(transcript)
             
             # Prepare prompt
-            prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript[:500])  # Limit transcript length
+            prompt = self.ANALYSIS_PROMPT.replace("{transcript}", transcript[:500])
             
             # Call Gemini with timeout
             response = self.model.generate_content(prompt)
             
             raw_text = response.text
-            print(f"Raw response: {raw_text[:200]}...")  # Log first 200 chars
+            print(f"Raw response: {raw_text[:200]}...")
             
             # Extract JSON
             text = raw_text.strip()

@@ -19,7 +19,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,27 +46,11 @@ async def get_db():
                 )
 
     try:
-        parsed = urlparse(database_url)
-        print("==========================================")
-        print("DATABASE CONNECTION DEBUG")
-        print("==========================================")
-        print(f"Scheme   : {parsed.scheme}")
-        print(f"Host     : {parsed.hostname}")
-        print(f"Port     : {parsed.port}")
-        print(f"Database : {parsed.path}")
-        print(f"Username : {parsed.username}")
-        print("Password : [HIDDEN]")
-        print("==========================================")
-    except Exception as debug_error:
-        print(f"Could not parse DATABASE_URL: {debug_error}")
-
-    try:
         conn = await asyncpg.connect(dsn=database_url)
         print("✅ PostgreSQL connection successful")
         return conn
     except Exception as db_error:
-        print("❌ PostgreSQL connection failed")
-        print(f"Database error: {type(db_error).__name__}: {db_error}")
+        print(f"❌ PostgreSQL connection failed: {db_error}")
         raise
 
 # ============================================================
@@ -77,10 +60,6 @@ class UserDetails(BaseModel):
     full_name: str
     email: str
     phone: Optional[str] = None
-
-class SessionCreateResponse(BaseModel):
-    session_id: str
-    status: str = "started"
 
 class CategoryUpdateRequest(BaseModel):
     user_category: str
@@ -101,41 +80,27 @@ class AssessmentCompleteRequest(BaseModel):
     user_details: Optional[UserDetails] = None
 
 # ============================================================
-# ROOT ENDPOINT
+# ROOT & HEALTH
 # ============================================================
 @app.get("/")
 async def root():
-    return {
-        "service": "Unspoken Backend",
-        "status": "running",
-        "docs": "/docs"
-    }
+    return {"service": "Unspoken Backend", "status": "running", "docs": "/docs"}
 
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 @app.get("/api/health")
 async def health():
     conn = None
     try:
         conn = await get_db()
         result = await conn.fetchrow("SELECT NOW() AS current_time")
-        return {
-            "status": "✅ API is running!",
-            "database": "Connected",
-            "timestamp": result["current_time"]
-        }
+        return {"status": "✅ API is running!", "database": "Connected", "timestamp": result["current_time"]}
     except Exception as e:
-        return {
-            "status": "⚠️ API running but database connection failed",
-            "error": str(e)
-        }
+        return {"status": "⚠️ API running but database connection failed", "error": str(e)}
     finally:
         if conn:
             await conn.close()
 
 # ============================================================
-# 1. SESSIONS
+# SESSIONS
 # ============================================================
 @app.post("/api/sessions")
 async def create_session():
@@ -143,19 +108,12 @@ async def create_session():
     try:
         conn = await get_db()
         session_id = str(uuid.uuid4())
-        
         await conn.execute(
-            """INSERT INTO assessment_sessions 
-               (session_id, status, started_at)
+            """INSERT INTO assessment_sessions (session_id, status, started_at)
                VALUES ($1, 'started', NOW())""",
             session_id
         )
-        
-        return {
-            "success": True,
-            "session_id": session_id,
-            "status": "started"
-        }
+        return {"success": True, "session_id": session_id, "status": "started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -167,24 +125,17 @@ async def update_session_category(session_id: str, data: CategoryUpdateRequest):
     conn = None
     try:
         conn = await get_db()
-        
         session = await conn.fetchrow(
             "SELECT session_id FROM assessment_sessions WHERE session_id = $1",
             session_id
         )
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        
         await conn.execute(
             "UPDATE assessment_sessions SET user_category = $1 WHERE session_id = $2",
             data.user_category, session_id
         )
-        
-        return {
-            "success": True,
-            "session_id": session_id,
-            "user_category": data.user_category
-        }
+        return {"success": True, "session_id": session_id, "user_category": data.user_category}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -192,17 +143,17 @@ async def update_session_category(session_id: str, data: CategoryUpdateRequest):
             await conn.close()
 
 # ============================================================
-# 2. QUESTIONS - FIXED!
+# QUESTIONS - FIXED!
 # ============================================================
 @app.get("/api/questions/{category_code}")
 async def get_category_questions(category_code: str):
-    """Get all questions for a specific category from the questions table"""
+    """Get all questions for a specific category"""
     conn = None
     try:
         conn = await get_db()
         
-        # First, check if the category exists
-        category_check = await conn.fetchrow(
+        # Check if category exists in category_mapping
+        category_exists = await conn.fetchrow(
             "SELECT category_code FROM category_mapping WHERE category_code = $1",
             category_code
         )
@@ -219,7 +170,6 @@ async def get_category_questions(category_code: str):
             category_code
         )
         
-        # If no questions found, return empty array
         questions = []
         for row in rows:
             options = row["options"]
@@ -240,25 +190,16 @@ async def get_category_questions(category_code: str):
                 "display_order": row["display_order"]
             })
         
-        return {
-            "success": True,
-            "category": category_code,
-            "questions": questions
-        }
+        return {"success": True, "category": category_code, "questions": questions}
     except Exception as e:
-        print(f"❌ Error fetching questions for {category_code}: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "category": category_code,
-            "questions": []
-        }
+        print(f"❌ Error fetching questions: {e}")
+        return {"success": False, "error": str(e), "category": category_code, "questions": []}
     finally:
         if conn:
             await conn.close()
 
 # ============================================================
-# 3. RESPONSES
+# RESPONSES
 # ============================================================
 @app.post("/api/responses")
 async def submit_response(data: ResponseSubmitRequest):
@@ -268,7 +209,6 @@ async def submit_response(data: ResponseSubmitRequest):
             raise HTTPException(status_code=400, detail="session_id and question_code are required")
         
         conn = await get_db()
-        
         session = await conn.fetchrow(
             "SELECT session_id, user_id FROM assessment_sessions WHERE session_id = $1",
             data.session_id
@@ -287,11 +227,8 @@ async def submit_response(data: ResponseSubmitRequest):
             """INSERT INTO responses 
                (session_id, user_id, question_id, selected_option, text_response, response_type)
                VALUES ($1, $2, $3, $4, $5, $6)""",
-            data.session_id,
-            session["user_id"],
-            question["question_id"],
-            data.selected_option,
-            data.text_response,
+            data.session_id, session["user_id"], question["question_id"],
+            data.selected_option, data.text_response,
             "choice" if data.selected_option else "text"
         )
         
@@ -305,7 +242,7 @@ async def submit_response(data: ResponseSubmitRequest):
             await conn.close()
 
 # ============================================================
-# 4. VOICE ANALYSIS
+# VOICE ANALYSIS
 # ============================================================
 @app.post("/api/voice/analyze")
 async def analyze_voice(data: VoiceAnalysisRequest):
@@ -315,7 +252,6 @@ async def analyze_voice(data: VoiceAnalysisRequest):
             raise HTTPException(status_code=400, detail="session_id and transcript are required")
         
         conn = await get_db()
-        
         session = await conn.fetchrow(
             "SELECT session_id, user_id FROM assessment_sessions WHERE session_id = $1",
             data.session_id
@@ -335,22 +271,14 @@ async def analyze_voice(data: VoiceAnalysisRequest):
                (session_id, user_id, question_id, response_type, text_response) 
                VALUES ($1, $2, $3, 'voice', $4) 
                RETURNING response_id""",
-            data.session_id,
-            session["user_id"],
-            question["question_id"],
-            data.transcript
+            data.session_id, session["user_id"], question["question_id"], data.transcript
         )
         
-        # Simple analysis (placeholder)
+        # Simple analysis placeholder
         analysis = {
-            "clarity": 70,
-            "structure": 65,
-            "confidence": 75,
-            "presence": 70,
-            "connection": 68,
-            "influence": 72,
-            "overall": 70,
-            "feedback": "Good communication skills with room for improvement."
+            "clarity": 70, "structure": 65, "confidence": 75,
+            "presence": 70, "connection": 68, "influence": 72,
+            "overall": 70, "feedback": "Good communication skills with room for improvement."
         }
         
         await conn.execute(
@@ -359,14 +287,9 @@ async def analyze_voice(data: VoiceAnalysisRequest):
                 presence_score, connection_score, influence_score, overall_score, analysis_json)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
             response_id,
-            analysis['clarity'],
-            analysis['structure'],
-            analysis['confidence'],
-            analysis['presence'],
-            analysis['connection'],
-            analysis['influence'],
-            analysis['overall'],
-            json.dumps(analysis)
+            analysis['clarity'], analysis['structure'], analysis['confidence'],
+            analysis['presence'], analysis['connection'], analysis['influence'],
+            analysis['overall'], json.dumps(analysis)
         )
         
         return {"success": True, "analysis": analysis}
@@ -379,7 +302,7 @@ async def analyze_voice(data: VoiceAnalysisRequest):
             await conn.close()
 
 # ============================================================
-# 5. ASSESSMENT COMPLETION
+# ASSESSMENT COMPLETION
 # ============================================================
 @app.post("/api/assessment/complete")
 async def complete_assessment(data: AssessmentCompleteRequest):
@@ -389,7 +312,6 @@ async def complete_assessment(data: AssessmentCompleteRequest):
             raise HTTPException(status_code=400, detail="Session ID is required")
         
         conn = await get_db()
-        
         session = await conn.fetchrow(
             "SELECT session_id, user_id, user_category FROM assessment_sessions WHERE session_id = $1",
             data.session_id
@@ -410,9 +332,7 @@ async def complete_assessment(data: AssessmentCompleteRequest):
                     """INSERT INTO users (full_name, email, phone) 
                        VALUES ($1, $2, $3) 
                        RETURNING user_id""",
-                    data.user_details.full_name,
-                    data.user_details.email,
-                    data.user_details.phone
+                    data.user_details.full_name, data.user_details.email, data.user_details.phone
                 )
             
             if user_id:
@@ -421,27 +341,19 @@ async def complete_assessment(data: AssessmentCompleteRequest):
                     user_id, data.session_id
                 )
         
+        # Get responses
         responses = await conn.fetch(
-            """SELECT 
-                q.question_code,
-                r.selected_option,
-                r.text_response
-               FROM responses r
-               JOIN questions q ON r.question_id = q.question_id
+            """SELECT q.question_code, r.selected_option, r.text_response
+               FROM responses r JOIN questions q ON r.question_id = q.question_id
                WHERE r.session_id = $1""",
             data.session_id
         )
         
         # Simple scoring
-        scores = {
-            'SIM': 0, 'PER': 0, 'THI': 0,
-            'CUR': 0, 'PRE': 0, 'CON': 0, 'EMV': 0
-        }
+        scores = {'SIM': 0, 'PER': 0, 'THI': 0, 'CUR': 0, 'PRE': 0, 'CON': 0, 'EMV': 0}
         
-        # Add some points based on responses
         for response in responses:
             if response.get('selected_option'):
-                # Simple mapping for demo
                 if response['question_code'].startswith('Q'):
                     scores['SIM'] += 1
                 else:
@@ -458,18 +370,13 @@ async def complete_assessment(data: AssessmentCompleteRequest):
             """INSERT INTO assessment_results 
                (session_id, user_id, archetype_code, overall_score, score_breakdown, result_text)
                VALUES ($1, $2, $3, $4, $5, $6)""",
-            data.session_id,
-            user_id,
-            top_archetype,
-            scores[top_archetype],
+            data.session_id, user_id, top_archetype, scores[top_archetype],
             json.dumps(scores),
             f"Your primary archetype is {archetype['archetype_name'] if archetype else top_archetype}"
         )
         
         await conn.execute(
-            """UPDATE assessment_sessions 
-               SET status = 'completed', completed_at = NOW() 
-               WHERE session_id = $1""",
+            "UPDATE assessment_sessions SET status = 'completed', completed_at = NOW() WHERE session_id = $1",
             data.session_id
         )
         
@@ -492,14 +399,13 @@ async def complete_assessment(data: AssessmentCompleteRequest):
             await conn.close()
 
 # ============================================================
-# 6. ASSESSMENT RESULT
+# ASSESSMENT RESULT
 # ============================================================
 @app.get("/api/assessment/result/{session_id}")
 async def get_assessment_result(session_id: str):
     conn = None
     try:
         conn = await get_db()
-        
         session = await conn.fetchrow(
             "SELECT session_id, user_id, status FROM assessment_sessions WHERE session_id = $1",
             session_id
@@ -548,7 +454,7 @@ async def get_assessment_result(session_id: str):
             await conn.close()
 
 # ============================================================
-# 7. ARCHETYPES
+# ARCHETYPES
 # ============================================================
 @app.get("/api/archetypes")
 async def get_archetypes():
@@ -560,10 +466,7 @@ async def get_archetypes():
                       key_traits, strengths, growth_areas, communication_style
                FROM archetypes ORDER BY archetype_id"""
         )
-        return {
-            "success": True,
-            "archetypes": [dict(row) for row in rows]
-        }
+        return {"success": True, "archetypes": [dict(row) for row in rows]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:

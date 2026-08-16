@@ -33,7 +33,7 @@ async def get_db():
         database=os.environ.get('DB_NAME', 'theunspoken_db'),
         user=os.environ.get('DB_USER', 'theunspoken_user'),
         password=os.environ.get('DB_PASSWORD', ''),
-        port=os.environ.get('DB_PORT', '5432')
+        port=os.environ.get('DB_PORT', '5432'),
         sslmode='require'  # Add this line
     )
 

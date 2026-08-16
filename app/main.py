@@ -7,8 +7,6 @@ from typing import Optional
 from pydantic import BaseModel
 from urllib.parse import urlparse
 
-from app.routes import analyze
-
 # ============================================================
 # ENVIRONMENT
 # ============================================================
@@ -38,30 +36,13 @@ app.add_middleware(
 # DATABASE CONNECTION
 # ============================================================
 async def get_db():
-    """
-    Connect to PostgreSQL using the Render DATABASE_URL.
-
-    DATABASE_URL should be the complete Internal Database URL
-    provided by Render.
-
-    Example format:
-    postgresql://username:password@hostname:5432/database
-    """
-
     database_url = os.environ.get("DATABASE_URL")
 
     if not database_url:
-        raise Exception(
-            "DATABASE_URL environment variable is not configured"
-        )
+        raise Exception("DATABASE_URL environment variable is not configured")
 
-    # --------------------------------------------------------
-    # SAFE DEBUG INFORMATION
-    # Does NOT print password
-    # --------------------------------------------------------
     try:
         parsed = urlparse(database_url)
-
         print("==========================================")
         print("DATABASE CONNECTION DEBUG")
         print("==========================================")
@@ -72,37 +53,25 @@ async def get_db():
         print(f"Username : {parsed.username}")
         print("Password : [HIDDEN]")
         print("==========================================")
-
     except Exception as debug_error:
         print(f"Could not parse DATABASE_URL: {debug_error}")
 
-    # --------------------------------------------------------
-    # CONNECT
-    # --------------------------------------------------------
     try:
-        conn = await asyncpg.connect(
-            dsn=database_url
-        )
-
+        conn = await asyncpg.connect(dsn=database_url)
         print("✅ PostgreSQL connection successful")
-
         return conn
-
     except Exception as db_error:
         print("❌ PostgreSQL connection failed")
         print(f"Database error: {type(db_error).__name__}: {db_error}")
         raise
 
-
 # ============================================================
 # MODELS
 # ============================================================
-
 class UserCreate(BaseModel):
     fullName: str
     email: str
     whatsapp: Optional[str] = None
-
 
 class ResponseSubmit(BaseModel):
     userId: str
@@ -111,11 +80,9 @@ class ResponseSubmit(BaseModel):
     responseType: str = "choice"
     voiceUrl: Optional[str] = None
 
-
 # ============================================================
 # ROOT ENDPOINT
 # ============================================================
-
 @app.get("/")
 async def root():
     return {
@@ -124,76 +91,49 @@ async def root():
         "docs": "/docs"
     }
 
-
 # ============================================================
 # HEALTH CHECK
 # ============================================================
-
 @app.get("/api/health")
 async def health():
-
     conn = None
-
     try:
         conn = await get_db()
-
-        result = await conn.fetchrow(
-            "SELECT NOW() AS current_time"
-        )
-
+        result = await conn.fetchrow("SELECT NOW() AS current_time")
         return {
             "status": "✅ API is running!",
             "database": "Connected",
             "timestamp": result["current_time"]
         }
-
     except Exception as e:
-
         print("❌ HEALTH CHECK FAILED")
         print(f"Error type: {type(e).__name__}")
         print(f"Error: {str(e)}")
-
         return {
             "status": "⚠️ API running but database connection failed",
             "error_type": type(e).__name__,
             "error": str(e)
         }
-
     finally:
         if conn:
             await conn.close()
 
-
 # ============================================================
 # USERS ROUTES
 # ============================================================
-
 @app.post("/api/users")
 async def create_user(user: UserCreate):
-
     conn = None
-
     try:
         conn = await get_db()
-
         result = await conn.fetch(
             """
-            INSERT INTO users
-                (full_name, email, whatsapp)
-            VALUES
-                ($1, $2, $3)
-            RETURNING
-                user_id,
-                full_name,
-                email,
-                whatsapp,
-                created_at
+            INSERT INTO users (full_name, email, whatsapp)
+            VALUES ($1, $2, $3)
+            RETURNING user_id, full_name, email, whatsapp, created_at
             """,
-            user.fullName,
-            user.email,
-            user.whatsapp
+            user.fullName, user.email, user.whatsapp
         )
-
         return {
             "success": True,
             "user": {
@@ -204,48 +144,27 @@ async def create_user(user: UserCreate):
                 "created_at": result[0]["created_at"]
             }
         }
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
 
-
 @app.get("/api/users/{user_id}")
 async def get_user(user_id: str):
-
     conn = None
-
     try:
         conn = await get_db()
-
         result = await conn.fetch(
             """
-            SELECT
-                user_id,
-                full_name,
-                email,
-                whatsapp,
-                created_at,
-                assessment_completed,
-                communication_persona
-            FROM users
-            WHERE user_id = $1
+            SELECT user_id, full_name, email, whatsapp, created_at,
+                   assessment_completed, communication_persona
+            FROM users WHERE user_id = $1
             """,
             user_id
         )
-
         if not result:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-
+            raise HTTPException(status_code=404, detail="User not found")
         return {
             "success": True,
             "user": {
@@ -258,59 +177,33 @@ async def get_user(user_id: str):
                 "communication_persona": result[0]["communication_persona"]
             }
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
 
-
 @app.put("/api/users/{user_id}")
-async def update_user(
-    user_id: str,
-    user: UserCreate
-):
-
+async def update_user(user_id: str, user: UserCreate):
     conn = None
-
     try:
         conn = await get_db()
-
         result = await conn.fetch(
             """
             UPDATE users
-            SET
-                full_name = COALESCE($1, full_name),
+            SET full_name = COALESCE($1, full_name),
                 email = COALESCE($2, email),
                 whatsapp = COALESCE($3, whatsapp),
                 last_active = CURRENT_TIMESTAMP
             WHERE user_id = $4
-            RETURNING
-                user_id,
-                full_name,
-                email,
-                whatsapp
+            RETURNING user_id, full_name, email, whatsapp
             """,
-            user.fullName,
-            user.email,
-            user.whatsapp,
-            user_id
+            user.fullName, user.email, user.whatsapp, user_id
         )
-
         if not result:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-
+            raise HTTPException(status_code=404, detail="User not found")
         return {
             "success": True,
             "user": {
@@ -320,50 +213,29 @@ async def update_user(
                 "whatsapp": result[0]["whatsapp"]
             }
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
 
-
 # ============================================================
 # QUESTIONS ROUTES
 # ============================================================
-
 @app.get("/api/questions")
 async def get_questions():
-
     conn = None
-
     try:
         conn = await get_db()
-
         rows = await conn.fetch(
             """
-            SELECT
-                question_id,
-                question_text,
-                question_type,
-                category,
-                options,
-                display_order
-            FROM questions
-            WHERE is_active = true
-            ORDER BY display_order ASC
+            SELECT question_id, question_text, question_type, category, options, display_order
+            FROM questions WHERE is_active = true ORDER BY display_order ASC
             """
         )
-
         questions = []
-
         for row in rows:
             questions.append({
                 "question_id": row["question_id"],
@@ -373,49 +245,26 @@ async def get_questions():
                 "options": row["options"],
                 "display_order": row["display_order"]
             })
-
-        return {
-            "success": True,
-            "questions": questions
-        }
-
+        return {"success": True, "questions": questions}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
 
-
 @app.get("/api/questions/category/{category}")
 async def get_questions_by_category(category: str):
-
     conn = None
-
     try:
         conn = await get_db()
-
         rows = await conn.fetch(
             """
-            SELECT
-                question_id,
-                question_text,
-                question_type,
-                options,
-                display_order
-            FROM questions
-            WHERE category = $1
-              AND is_active = true
-            ORDER BY display_order ASC
+            SELECT question_id, question_text, question_type, options, display_order
+            FROM questions WHERE category = $1 AND is_active = true ORDER BY display_order ASC
             """,
             category
         )
-
         questions = []
-
         for row in rows:
             questions.append({
                 "question_id": row["question_id"],
@@ -424,58 +273,30 @@ async def get_questions_by_category(category: str):
                 "options": row["options"],
                 "display_order": row["display_order"]
             })
-
-        return {
-            "success": True,
-            "questions": questions
-        }
-
+        return {"success": True, "questions": questions}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
 
-
 # ============================================================
 # RESPONSES ROUTES
 # ============================================================
-
 @app.post("/api/responses")
 async def submit_response(response: ResponseSubmit):
-
     conn = None
-
     try:
         conn = await get_db()
-
         result = await conn.fetch(
             """
-            INSERT INTO responses
-                (
-                    user_id,
-                    question_id,
-                    answer,
-                    response_type,
-                    voice_url
-                )
-            VALUES
-                ($1, $2, $3, $4, $5)
-            RETURNING
-                response_id,
-                created_at
+            INSERT INTO responses (user_id, question_id, answer, response_type, voice_url)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING response_id, created_at
             """,
-            response.userId,
-            response.questionId,
-            response.answer,
-            response.responseType,
-            response.voiceUrl
+            response.userId, response.questionId, response.answer,
+            response.responseType, response.voiceUrl
         )
-
         return {
             "success": True,
             "response": {
@@ -483,92 +304,49 @@ async def submit_response(response: ResponseSubmit):
                 "created_at": result[0]["created_at"]
             }
         }
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
 
 @app.get("/api/responses/user/{user_id}")
 async def get_user_responses(user_id: str):
-
     conn = None
-
     try:
         conn = await get_db()
-
         rows = await conn.fetch(
             """
-            SELECT
-                r.*,
-                q.question_text,
-                q.category
+            SELECT r.*, q.question_text, q.category
             FROM responses r
-            JOIN questions q
-                ON r.question_id = q.question_id
-            WHERE r.user_id = $1
-            ORDER BY r.created_at ASC
+            JOIN questions q ON r.question_id = q.question_id
+            WHERE r.user_id = $1 ORDER BY r.created_at ASC
             """,
             user_id
         )
-
-        responses = []
-
-        for row in rows:
-            responses.append(dict(row))
-
-        return {
-            "success": True,
-            "responses": responses
-        }
-
+        return {"success": True, "responses": [dict(row) for row in rows]}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
 
 # ============================================================
 # ARCHETYPE ROUTES
 # ============================================================
-
 @app.get("/api/archetypes")
 async def get_archetypes():
-
     conn = None
-
     try:
         conn = await get_db()
-
         rows = await conn.fetch(
             """
-            SELECT
-                archetype_id,
-                archetype_name,
-                archetype_code,
-                description,
-                key_traits,
-                strengths,
-                growth_areas,
-                communication_style
-            FROM archetypes
-            ORDER BY archetype_id
+            SELECT archetype_id, archetype_name, archetype_code, description,
+                   key_traits, strengths, growth_areas, communication_style
+            FROM archetypes ORDER BY archetype_id
             """
         )
-
         archetypes = []
-
         for row in rows:
             archetypes.append({
                 "archetype_id": row["archetype_id"],
@@ -580,139 +358,72 @@ async def get_archetypes():
                 "growth_areas": row["growth_areas"],
                 "communication_style": row["communication_style"]
             })
-
-        return {
-            "success": True,
-            "archetypes": archetypes
-        }
-
+        return {"success": True, "archetypes": archetypes}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
 
 @app.get("/api/archetypes/{archetype_id}")
 async def get_archetype(archetype_id: int):
-
     conn = None
-
     try:
         conn = await get_db()
-
         row = await conn.fetchrow(
-            """
-            SELECT *
-            FROM archetypes
-            WHERE archetype_id = $1
-            """,
+            "SELECT * FROM archetypes WHERE archetype_id = $1",
             archetype_id
         )
-
         if not row:
-            raise HTTPException(
-                status_code=404,
-                detail="Archetype not found"
-            )
-
-        return {
-            "success": True,
-            "archetype": dict(row)
-        }
-
+            raise HTTPException(status_code=404, detail="Archetype not found")
+        return {"success": True, "archetype": dict(row)}
     except HTTPException:
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
 
 # ============================================================
 # ASSESSMENT COMPLETION
 # ============================================================
-
 @app.post("/api/assessment/complete")
 async def complete_assessment(data: dict):
-
     conn = None
-
     try:
         user_id = data.get("userId")
         responses = data.get("responses", [])
-        communication_persona = data.get(
-            "communicationPersona"
-        )
+        communication_persona = data.get("communicationPersona")
         archetype_id = data.get("archetypeId")
 
         if not user_id:
-            raise HTTPException(
-                status_code=400,
-                detail="User ID is required"
-            )
+            raise HTTPException(status_code=400, detail="User ID is required")
 
         conn = await get_db()
-
         async with conn.transaction():
-
-            # Insert responses
             for response in responses:
-
                 await conn.execute(
                     """
-                    INSERT INTO responses
-                        (
-                            user_id,
-                            question_id,
-                            answer,
-                            response_type
-                        )
-                    VALUES
-                        ($1, $2, $3, $4)
+                    INSERT INTO responses (user_id, question_id, answer, response_type)
+                    VALUES ($1, $2, $3, $4)
                     """,
                     user_id,
                     response["questionId"],
                     response["answer"],
-                    response.get(
-                        "responseType",
-                        "choice"
-                    )
+                    response.get("responseType", "choice")
                 )
 
-            # Update user
             await conn.execute(
                 """
                 UPDATE users
-                SET
-                    assessment_completed = true,
-                    communication_persona =
-                        COALESCE(
-                            $1,
-                            communication_persona
-                        ),
-                    archetype_id =
-                        COALESCE(
-                            $2,
-                            archetype_id
-                        ),
-                    last_active =
-                        CURRENT_TIMESTAMP
+                SET assessment_completed = true,
+                    communication_persona = COALESCE($1, communication_persona),
+                    archetype_id = COALESCE($2, archetype_id),
+                    last_active = CURRENT_TIMESTAMP
                 WHERE user_id = $3
                 """,
-                communication_persona,
-                archetype_id,
-                user_id
+                communication_persona, archetype_id, user_id
             )
 
         return {
@@ -721,73 +432,40 @@ async def complete_assessment(data: dict):
             "communicationPersona": communication_persona,
             "archetypeId": archetype_id
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
 
-
 # ============================================================
 # ASSESSMENT RESULT
 # ============================================================
-
 @app.get("/api/assessment/result/{user_id}")
 async def get_assessment_result(user_id: str):
-
     conn = None
-
     try:
         conn = await get_db()
-
         user_result = await conn.fetchrow(
             """
-            SELECT
-                user_id,
-                full_name,
-                email,
-                communication_persona,
-                archetype_id,
-                assessment_completed
-            FROM users
-            WHERE user_id = $1
+            SELECT user_id, full_name, email, communication_persona, archetype_id, assessment_completed
+            FROM users WHERE user_id = $1
             """,
             user_id
         )
-
         if not user_result:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-
+            raise HTTPException(status_code=404, detail="User not found")
         if not user_result["assessment_completed"]:
-            raise HTTPException(
-                status_code=400,
-                detail="Assessment not completed yet"
-            )
+            raise HTTPException(status_code=400, detail="Assessment not completed yet")
 
         archetype = None
-
         if user_result["archetype_id"]:
-
             archetype_row = await conn.fetchrow(
-                """
-                SELECT *
-                FROM archetypes
-                WHERE archetype_id = $1
-                """,
+                "SELECT * FROM archetypes WHERE archetype_id = $1",
                 user_result["archetype_id"]
             )
-
             if archetype_row:
                 archetype = dict(archetype_row)
 
@@ -797,34 +475,15 @@ async def get_assessment_result(user_id: str):
                 "user_id": user_result["user_id"],
                 "full_name": user_result["full_name"],
                 "email": user_result["email"],
-                "communication_persona":
-                    user_result["communication_persona"],
-                "assessment_completed":
-                    user_result["assessment_completed"],
+                "communication_persona": user_result["communication_persona"],
+                "assessment_completed": user_result["assessment_completed"],
                 "archetype": archetype
             }
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
-
-# ============================================================
-# ANALYZE ROUTER
-# ============================================================
-
-app.include_router(
-    analyze.router,
-    prefix="/api",
-    tags=["Analysis"]
-)

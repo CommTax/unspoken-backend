@@ -6,6 +6,8 @@ import asyncpg
 from typing import Optional
 from pydantic import BaseModel
 from urllib.parse import urlparse
+import re
+import uuid
 
 # ============================================================
 # ENVIRONMENT
@@ -33,13 +35,31 @@ app.add_middleware(
 )
 
 # ============================================================
-# DATABASE CONNECTION
+# DATABASE CONNECTION - FIXED
 # ============================================================
 async def get_db():
     database_url = os.environ.get("DATABASE_URL")
 
     if not database_url:
         raise Exception("DATABASE_URL environment variable is not configured")
+
+    # ============================================================
+    # FIX: Ensure port is included (5432)
+    # ============================================================
+    # If the URL doesn't have a port, add :5432
+    if database_url and 'postgresql://' in database_url:
+        # Extract the host part to check
+        match = re.search(r'@([^:]+)(?::\d+)?/', database_url)
+        if match:
+            host_part = match.group(1)
+            # If no port in the URL, add it
+            if ':' not in host_part:
+                # Insert :5432 before the database name
+                database_url = database_url.replace(
+                    f'@{host_part}/',
+                    f'@{host_part}:5432/'
+                )
+                print(f"🔧 Added missing port to DATABASE_URL")
 
     try:
         parsed = urlparse(database_url)
@@ -124,7 +144,6 @@ async def health():
 @app.post("/api/sessions")
 async def create_session():
     """Create a new assessment session"""
-    import uuid
     conn = None
     try:
         conn = await get_db()
@@ -147,9 +166,6 @@ async def create_session():
         if conn:
             await conn.close()
 
-
-
-
 # ============================================================
 # USERS ROUTES
 # ============================================================
@@ -157,7 +173,9 @@ async def create_session():
 async def create_user(user: UserCreate):
     conn = None
     try:
+        print(f"📝 Creating user: {user.fullName}, {user.email}")
         conn = await get_db()
+        
         result = await conn.fetch(
             """
             INSERT INTO users (full_name, email, whatsapp)
@@ -166,6 +184,9 @@ async def create_user(user: UserCreate):
             """,
             user.fullName, user.email, user.whatsapp
         )
+        
+        print(f"✅ User created: {result[0]['user_id']}")
+        
         return {
             "success": True,
             "user": {
@@ -177,6 +198,7 @@ async def create_user(user: UserCreate):
             }
         }
     except Exception as e:
+        print(f"❌ Error creating user: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
@@ -418,6 +440,80 @@ async def get_archetype(archetype_id: int):
             await conn.close()
 
 # ============================================================
+# VOICE ANALYSIS
+# ============================================================
+@app.post("/api/voice/analyze")
+async def analyze_voice(data: dict):
+    """Analyze a voice transcript"""
+    conn = None
+    try:
+        session_id = data.get("session_id")
+        question_code = data.get("question_code")
+        transcript = data.get("transcript")
+        
+        if not session_id or not transcript:
+            raise HTTPException(status_code=400, detail="session_id and transcript are required")
+        
+        conn = await get_db()
+        
+        # Find the question
+        cat_q = await conn.fetchrow(
+            """SELECT category_question_id FROM category_questions 
+               WHERE question_number = $1 LIMIT 1""",
+            f"Q{question_code}"
+        )
+        
+        if not cat_q:
+            raise HTTPException(status_code=404, detail="Voice question not found")
+        
+        # Save transcript
+        response_id = await conn.fetchval(
+            """INSERT INTO responses 
+               (user_id, category_question_id, response_type, text_response) 
+               VALUES ($1, $2, 'voice_transcript', $3) 
+               RETURNING response_id""",
+            session_id, cat_q['category_question_id'], transcript
+        )
+        
+        # Simple analysis (replace with Gemini later)
+        analysis = {
+            "clarity": 70,
+            "structure": 65,
+            "confidence": 75,
+            "presence": 70,
+            "connection": 68,
+            "influence": 72,
+            "overall": 70,
+            "feedback": "Good communication skills with room for improvement."
+        }
+        
+        # Save to voice_analysis
+        await conn.execute(
+            """INSERT INTO voice_analysis 
+               (response_id, clarity_score, structure_score, confidence_score, 
+                presence_score, connection_score, influence_score, overall_score, analysis_json)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+            response_id,
+            analysis['clarity'],
+            analysis['structure'],
+            analysis['confidence'],
+            analysis['presence'],
+            analysis['connection'],
+            analysis['influence'],
+            analysis['overall'],
+            str(analysis)
+        )
+        
+        return {"success": True, "analysis": analysis}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+# ============================================================
 # ASSESSMENT COMPLETION
 # ============================================================
 @app.post("/api/assessment/complete")
@@ -441,8 +537,8 @@ async def complete_assessment(data: dict):
                     VALUES ($1, $2, $3, $4)
                     """,
                     user_id,
-                    response["questionId"],
-                    response["answer"],
+                    response.get("questionId"),
+                    response.get("answer"),
                     response.get("responseType", "choice")
                 )
 

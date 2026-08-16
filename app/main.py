@@ -28,14 +28,21 @@ app.add_middleware(
 # DATABASE CONNECTION
 # ============================================================
 async def get_db():
-    return await asyncpg.connect(
-        host=os.environ.get('DB_HOST', 'localhost'),
-        database=os.environ.get('DB_NAME', 'theunspoken_db'),
-        user=os.environ.get('DB_USER', 'theunspoken_user'),
-        password=os.environ.get('DB_PASSWORD', ''),
-        port=os.environ.get('DB_PORT', '5432'),
-        sslmode='require'  # Add this line
-    )
+    # Use DATABASE_URL if available, otherwise build from individual env vars
+    database_url = os.environ.get('DATABASE_URL')
+    if database_url:
+        return await asyncpg.connect(dsn=database_url)
+    else:
+        # Fallback: Build connection string manually
+        host = os.environ.get('DB_HOST', 'localhost')
+        port = os.environ.get('DB_PORT', '5432')
+        user = os.environ.get('DB_USER', 'theunspoken_user')
+        password = os.environ.get('DB_PASSWORD', '')
+        database = os.environ.get('DB_NAME', 'theunspoken_db')
+        
+        # Build the connection string with sslmode
+        dsn = f"postgresql://{user}:{password}@{host}:{port}/{database}?sslmode=require"
+        return await asyncpg.connect(dsn=dsn)
 
 # ============================================================
 # MODELS

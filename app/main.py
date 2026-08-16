@@ -119,6 +119,38 @@ async def health():
             await conn.close()
 
 # ============================================================
+# SESSIONS ROUTE
+# ============================================================
+@app.post("/api/sessions")
+async def create_session():
+    """Create a new assessment session"""
+    import uuid
+    conn = None
+    try:
+        conn = await get_db()
+        session_id = str(uuid.uuid4())
+        
+        await conn.execute(
+            """INSERT INTO assessment_sessions 
+               (session_id, status, started_at)
+               VALUES ($1, 'started', NOW())""",
+            session_id
+        )
+        
+        return {
+            "success": True,
+            "session_id": session_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+
+
+# ============================================================
 # USERS ROUTES
 # ============================================================
 @app.post("/api/users")

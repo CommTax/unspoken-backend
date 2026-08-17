@@ -143,7 +143,7 @@ async def update_session_category(session_id: str, data: CategoryUpdateRequest):
             await conn.close()
 
 # ============================================================
-# QUESTIONS - FIXED!
+# QUESTIONS - CATEGORY
 # ============================================================
 @app.get("/api/questions/{category_code}")
 async def get_category_questions(category_code: str):
@@ -199,18 +199,8 @@ async def get_category_questions(category_code: str):
             await conn.close()
 
 # ============================================================
-# QUESTIONS - FIXED!
-# ============================================================
-@app.get("/api/questions/{category_code}")
-async def get_category_questions(category_code: str):
-    """Get all questions for a specific category"""
-    # ... existing code ...
-
-# 👇 ADD THE NEW ENDPOINTS HERE 👇
-# ============================================================
 # QUESTIONS - INITIAL & COMMON
 # ============================================================
-
 @app.get("/api/questions/initial")
 async def get_initial_question():
     """Get the initial routing question (Step 2)"""
@@ -348,14 +338,6 @@ async def get_common_question():
     finally:
         if conn:
             await conn.close()
-
-# ============================================================
-# RESPONSES
-# ============================================================
-@app.post("/api/responses")
-async def submit_response(data: ResponseSubmitRequest):
-    # ... existing code ...
-
 
 # ============================================================
 # RESPONSES

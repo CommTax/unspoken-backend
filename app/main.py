@@ -546,6 +546,10 @@ async def get_category_questions(category_code: str):
 # SAVE RESPONSE
 # ============================================================
 
+# ============================================================
+# RESPONSES
+# ============================================================
+
 @app.post("/api/responses")
 async def submit_response(data: ResponseSubmitRequest):
 
@@ -553,17 +557,34 @@ async def submit_response(data: ResponseSubmitRequest):
 
     try:
 
-        if not data.session_id or not data.question_code:
+        # ----------------------------------------------------
+        # 1. Validate request
+        # ----------------------------------------------------
 
+        if not data.session_id:
             raise HTTPException(
                 status_code=400,
-                detail="session_id and question_code are required"
+                detail="session_id is required"
+            )
+
+        if not data.question_code:
+            raise HTTPException(
+                status_code=400,
+                detail="question_code is required"
             )
 
         conn = await get_db()
 
+        print("==========================================")
+        print("📥 RESPONSE RECEIVED")
+        print("Session ID    :", data.session_id)
+        print("Question Code :", data.question_code)
+        print("Selected      :", data.selected_option)
+        print("Text          :", data.text_response)
+        print("==========================================")
+
         # ----------------------------------------------------
-        # VERIFY SESSION
+        # 2. Get session
         # ----------------------------------------------------
 
         session = await conn.fetchrow(
@@ -578,31 +599,40 @@ async def submit_response(data: ResponseSubmitRequest):
         )
 
         if not session:
-
             raise HTTPException(
                 status_code=404,
                 detail="Session not found"
             )
 
+        user_category = session["user_category"]
+
+        print("🔎 Session category:", user_category)
+
         # ----------------------------------------------------
-        # A / B UNIVERSAL QUESTIONS
+        # 3. A / B are universal questions
         # ----------------------------------------------------
 
-        question = await conn.fetchrow(
-            """
-            SELECT
-                question_id,
-                question_code,
-                question_type
-            FROM questions
-            WHERE question_code = $1
-            AND is_active = true
-            LIMIT 1
-            """,
-            data.question_code
-        )
+        if data.question_code in ["A", "B"]:
 
-        if question:
+            question = await conn.fetchrow(
+                """
+                SELECT
+                    question_id,
+                    question_code,
+                    question_type
+                FROM questions
+                WHERE question_code = $1
+                  AND is_active = true
+                LIMIT 1
+                """,
+                data.question_code
+            )
+
+            if not question:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Universal question not found: {data.question_code}"
+                )
 
             response_type = (
                 "choice"
@@ -620,14 +650,7 @@ async def submit_response(data: ResponseSubmitRequest):
                     text_response,
                     response_type
                 )
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3,
-                    $4,
-                    $5
-                )
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING response_id
                 """,
                 data.session_id,
@@ -637,99 +660,142 @@ async def submit_response(data: ResponseSubmitRequest):
                 response_type
             )
 
+            print("✅ Universal response saved:", data.question_code)
+            print("Response ID:", response_id)
+
+            return {
+                "success": True,
+                "response_id": str(response_id),
+                "session_id": data.session_id,
+                "question_code": data.question_code
+            }
+
         # ----------------------------------------------------
-        # CATEGORY Q1-Q10
+        # 4. Q1-Q10 require category
         # ----------------------------------------------------
+
+        if not user_category:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Session category has not been set"
+            )
+
+        # ----------------------------------------------------
+        # 5. Validate category
+        # ----------------------------------------------------
+
+        valid_categories = [
+            "fresher",
+            "senior",
+            "manager",
+            "transition",
+            "business",
+            "student",
+            "undecided"
+        ]
+
+        if user_category not in valid_categories:
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid session category: '{user_category}'. "
+                    f"Expected one of: {', '.join(valid_categories)}"
+                )
+            )
+
+        # ----------------------------------------------------
+        # 6. Find category question
+        # ----------------------------------------------------
+
+        category_question = await conn.fetchrow(
+            """
+            SELECT
+                category_question_id,
+                category_code,
+                question_number,
+                question_text,
+                is_voice
+            FROM category_questions
+            WHERE category_code = $1
+              AND question_number = $2
+            LIMIT 1
+            """,
+            user_category,
+            data.question_code
+        )
+
+        if not category_question:
+
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Question {data.question_code} not found "
+                    f"for category {user_category}"
+                )
+            )
+
+        # ----------------------------------------------------
+        # 7. Determine response type
+        # ----------------------------------------------------
+
+        if category_question["is_voice"]:
+
+            response_type = "voice"
+
+        elif data.selected_option:
+
+            response_type = "choice"
+
+        elif data.text_response:
+
+            response_type = "text"
 
         else:
 
-            category = session["user_category"]
+            response_type = "unknown"
 
-            if not category:
+        # ----------------------------------------------------
+        # 8. Save category response
+        # ----------------------------------------------------
 
-                raise HTTPException(
-                    status_code=400,
-                    detail="Session category has not been set"
-                )
-
-            category_question = await conn.fetchrow(
-                """
-                SELECT
-                    category_question_id,
-                    question_number,
-                    is_voice
-                FROM category_questions
-                WHERE category_code = $1
-                AND question_number = $2
-                LIMIT 1
-                """,
-                category,
-                data.question_code
-            )
-
-            if not category_question:
-
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"Question {data.question_code} "
-                        f"not found for category {category}"
-                    )
-                )
-
-            response_type = (
-                "voice"
-                if category_question["is_voice"]
-                else (
-                    "choice"
-                    if data.selected_option
-                    else "text"
-                )
-            )
-
-            response_id = await conn.fetchval(
-                """
-                INSERT INTO responses
-                (
-                    session_id,
-                    category_question_id,
-                    selected_option,
-                    text_response,
-                    response_type
-                )
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3,
-                    $4,
-                    $5
-                )
-                RETURNING response_id
-                """,
-                data.session_id,
-                category_question[
-                    "category_question_id"
-                ],
-                data.selected_option,
-                data.text_response,
+        response_id = await conn.fetchval(
+            """
+            INSERT INTO responses
+            (
+                session_id,
+                category_question_id,
+                selected_option,
+                text_response,
                 response_type
             )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING response_id
+            """,
+            data.session_id,
+            category_question["category_question_id"],
+            data.selected_option,
+            data.text_response,
+            response_type
+        )
 
         print("==========================================")
-        print("✅ RESPONSE SAVED")
-        print("Session       :", data.session_id)
-        print("Question      :", data.question_code)
-        print("Selected      :", data.selected_option)
-        print("Response ID   :", response_id)
+        print("✅ CATEGORY RESPONSE SAVED")
+        print("Session ID          :", data.session_id)
+        print("Category            :", user_category)
+        print("Question Code       :", data.question_code)
+        print("Category Question ID:", category_question["category_question_id"])
+        print("Response Type       :", response_type)
+        print("Response ID         :", response_id)
         print("==========================================")
 
         return {
             "success": True,
-            "message": "Response saved successfully",
             "response_id": str(response_id),
             "session_id": data.session_id,
-            "question_code": data.question_code
+            "question_code": data.question_code,
+            "category": user_category
         }
 
     except HTTPException:
@@ -737,9 +803,11 @@ async def submit_response(data: ResponseSubmitRequest):
 
     except Exception as e:
 
+        print("==========================================")
         print("❌ RESPONSE SAVE ERROR")
         print("Error type:", type(e).__name__)
         print("Error:", str(e))
+        print("==========================================")
 
         raise HTTPException(
             status_code=500,

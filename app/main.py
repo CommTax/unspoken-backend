@@ -1232,41 +1232,44 @@ async def complete_assessment(
         )
 
         # ----------------------------------------------------
-        # SAVE RESULT
+        # SAVE RESULT - CORRECTED INDENTATION
         # ----------------------------------------------------
-try:    
-await conn.execute(
-    """
-    INSERT INTO assessment_results
-    (
-        session_id,
-        archetype_code,
-        overall_score,
-        score_breakdown,
-        result_text
-    )
-    VALUES
-    (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5
-    )
-    """,
-    data.session_id,
-    top_archetype,
-    scores[top_archetype],
-    json.dumps(scores),
-    (
-        f"Your primary archetype is "
-        f"{archetype['archetype_name']}"
-        if archetype
-        else
-        f"Your primary archetype is "
-        f"{top_archetype}"
-    )
-)
+
+        await conn.execute(
+            """
+            INSERT INTO assessment_results
+            (
+                session_id,
+                user_id,
+                archetype_code,
+                overall_score,
+                score_breakdown,
+                result_text
+            )
+            VALUES
+            (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6
+            )
+            """,
+            data.session_id,
+            user_id,
+            top_archetype,
+            scores[top_archetype],
+            json.dumps(scores),
+            (
+                f"Your primary archetype is "
+                f"{archetype['archetype_name']}"
+                if archetype
+                else
+                f"Your primary archetype is "
+                f"{top_archetype}"
+            )
+        )
 
         # ----------------------------------------------------
         # COMPLETE SESSION

@@ -1499,6 +1499,225 @@ async def get_archetypes():
             detail=str(e)
         )
 
+    # ============================================================
+# GENERATE FREE REPORT
+# ============================================================
+@app.post("/api/report/generate-free")
+async def generate_free_report(data: dict):
+    conn = None
+    try:
+        session_id = data.get("session_id")
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID required")
+        
+        conn = await get_db()
+        
+        # Get session with user details
+        session = await conn.fetchrow(
+            """SELECT s.session_id, s.user_id, s.user_category, s.status,
+                      u.full_name, u.email
+               FROM assessment_sessions s
+               LEFT JOIN users u ON s.user_id = u.user_id
+               WHERE s.session_id = $1""",
+            session_id
+        )
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        if session["status"] != "completed":
+            raise HTTPException(status_code=400, detail="Assessment not completed yet")
+        
+        # Get user name
+        user_name = session["full_name"] or "Professional"
+        
+        # Get archetype from assessment_results
+        result = await conn.fetchrow(
+            """SELECT archetype_code, overall_score, score_breakdown
+               FROM assessment_results
+               WHERE session_id = $1
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            session_id
+        )
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="No results found")
+        
+        archetype_code = result["archetype_code"]
+        
+        # Get responses for DNA calculation
+        responses = await conn.fetch(
+            """SELECT r.question_code, r.selected_option, r.text_response
+               FROM responses r
+               WHERE r.session_id = $1""",
+            session_id
+        )
+        
+        # Calculate DNA scores (you'll need to implement this function)
+        dna_scores = calculate_communication_dna(responses, session["user_category"])
+        
+        # Get best matching persona based on archetype and scores
+        persona = await get_best_persona(conn, archetype_code, dna_scores)
+        
+        if not persona:
+            # Fallback to Articulator
+            persona = await conn.fetchrow(
+                "SELECT * FROM personas WHERE persona_code = 'ART'"
+            )
+        
+        # Build report data
+        report_data = {
+            "user_name": user_name,
+            "persona_code": persona["persona_code"],
+            "persona_name": persona["persona_name"],
+            "refined_description": persona["refined_description"],
+            "you_tend_to": persona["you_tend_to"],
+            "you_naturally_bring": persona["you_naturally_bring"],
+            "you_may_create": persona["you_may_create"],
+            "greatest_advantage": persona["greatest_advantage"],
+            "biggest_risk": persona["biggest_risk"],
+            "natural_advantage": persona["natural_advantage"],
+            "blind_spot": persona["blind_spot"],
+            "blind_spot_description": persona["blind_spot_description"],
+            "communication_dna": dna_scores,
+            "unspoken_gap": "Intention → Expression → Experience"
+        }
+        
+        # Save report
+        report_id = await conn.fetchval(
+            """INSERT INTO user_reports 
+               (session_id, user_id, persona_code, persona_name, 
+                persona_description, signature_strength, blind_spot, blind_spot_description, 
+                communication_dna, unspoken_gap, overall_score)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+               RETURNING report_id""",
+            session_id,
+            session["user_id"],
+            persona["persona_code"],
+            report_data["persona_name"],
+            report_data["refined_description"],
+            report_data["natural_advantage"],
+            report_data["blind_spot"],
+            report_data["blind_spot_description"],
+            json.dumps(dna_scores),
+            report_data["unspoken_gap"],
+            sum(dna_scores.values()) // 5
+        )
+        
+        report_data["report_id"] = str(report_id)
+        
+        return {
+            "success": True,
+            "report": report_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+# ============================================================
+# HELPER: GET BEST PERSONA
+# ============================================================
+async def get_best_persona(conn, archetype_code, dna_scores):
+    """
+    Find the best matching persona based on archetype and DNA scores.
+    """
+    # First, get all personas for this archetype
+    personas = await conn.fetch(
+        """SELECT * FROM personas 
+           WHERE archetype_code = $1 
+           ORDER BY persona_id""",
+        archetype_code
+    )
+    
+    if not personas:
+        return None
+    
+    # If only one persona for this archetype, return it
+    if len(personas) == 1:
+        return personas[0]
+    
+    # Calculate which persona matches best based on scores
+    best_match = None
+    best_score = -1
+    
+    for persona in personas:
+        # Simple matching logic - you can make this more sophisticated
+        # For now, return the first one for the archetype
+        # (You can implement more complex scoring here)
+        if best_match is None:
+            best_match = persona
+    
+    return best_match
+
+# ============================================================
+# HELPER: CALCULATE COMMUNICATION DNA
+# ============================================================
+def calculate_communication_dna(responses, user_category):
+    """
+    Calculate the 5 DNA scores based on user responses.
+    """
+    # Initialize scores
+    dna_scores = {
+        "thinking": 0,
+        "structure": 0,
+        "expression": 0,
+        "understanding": 0,
+        "influence": 0
+    }
+    
+    # Question to dimension mapping
+    dimension_mapping = {
+        "Q1": "thinking",
+        "Q2": "structure",
+        "Q3": "thinking",
+        "Q4": "structure",
+        "Q5": "understanding",
+        "Q6": "influence",
+        "Q7": "thinking",
+        "Q8": "expression",
+        "Q9": "understanding",
+        "Q10": "influence"
+    }
+    
+    # Process each response
+    for response in responses:
+        question_code = response.get("question_code")
+        selected_option = response.get("selected_option")
+        
+        if question_code in dimension_mapping:
+            dimension = dimension_mapping[question_code]
+            
+            # Score based on option (A=4, B=3, C=2, D=1, E=0.5)
+            option_score = 0
+            if selected_option in ['A', 'a']:
+                option_score = 4
+            elif selected_option in ['B', 'b']:
+                option_score = 3
+            elif selected_option in ['C', 'c']:
+                option_score = 2
+            elif selected_option in ['D', 'd']:
+                option_score = 1
+            elif selected_option in ['E', 'e']:
+                option_score = 0.5
+            
+            dna_scores[dimension] += option_score
+    
+    # Normalize to 0-100
+    max_score = 20  # 5 questions × 4 points each
+    for dimension in dna_scores:
+        dna_scores[dimension] = min(round((dna_scores[dimension] / max_score) * 100), 100)
+        # Ensure minimum score is 10
+        if dna_scores[dimension] < 10:
+            dna_scores[dimension] = 10
+    
+    return dna_scores
     finally:
 
         if conn:

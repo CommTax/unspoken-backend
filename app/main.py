@@ -199,6 +199,165 @@ async def get_category_questions(category_code: str):
             await conn.close()
 
 # ============================================================
+# QUESTIONS - FIXED!
+# ============================================================
+@app.get("/api/questions/{category_code}")
+async def get_category_questions(category_code: str):
+    """Get all questions for a specific category"""
+    # ... existing code ...
+
+# 👇 ADD THE NEW ENDPOINTS HERE 👇
+# ============================================================
+# QUESTIONS - INITIAL & COMMON
+# ============================================================
+
+@app.get("/api/questions/initial")
+async def get_initial_question():
+    """Get the initial routing question (Step 2)"""
+    conn = None
+    try:
+        conn = await get_db()
+        
+        # Get the initial question
+        question = await conn.fetchrow(
+            """SELECT question_code, question_text, question_type, 
+                      options, voice_prompt
+               FROM questions 
+               WHERE question_code = 'A' AND is_active = true
+               LIMIT 1"""
+        )
+        
+        if not question:
+            # Fallback hardcoded question
+            return {
+                "success": True,
+                "question": {
+                    "question_text": "Who are you becoming?",
+                    "options": [
+                        {"label": "Building my career", "value": "building"},
+                        {"label": "Stepping up", "value": "stepping-up"},
+                        {"label": "Leading with influence", "value": "leading"},
+                        {"label": "Preparing for what's next", "value": "nextmove"},
+                        {"label": "Redefining my next chapter", "value": "redefining"},
+                        {"label": "Building my business", "value": "business"}
+                    ]
+                }
+            }
+        
+        # Parse options if stored as JSON
+        options = question["options"]
+        if isinstance(options, str):
+            try:
+                options = json.loads(options)
+            except:
+                options = []
+        
+        return {
+            "success": True,
+            "question": {
+                "question_text": question["question_text"],
+                "options": options
+            }
+        }
+    except Exception as e:
+        print(f"❌ Error getting initial question: {e}")
+        # Return fallback
+        return {
+            "success": True,
+            "question": {
+                "question_text": "Who are you becoming?",
+                "options": [
+                    {"label": "Building my career", "value": "building"},
+                    {"label": "Stepping up", "value": "stepping-up"},
+                    {"label": "Leading with influence", "value": "leading"},
+                    {"label": "Preparing for what's next", "value": "nextmove"},
+                    {"label": "Redefining my next chapter", "value": "redefining"},
+                    {"label": "Building my business", "value": "business"}
+                ]
+            }
+        }
+    finally:
+        if conn:
+            await conn.close()
+
+@app.get("/api/questions/common")
+async def get_common_question():
+    """Get the common question (Step 3)"""
+    conn = None
+    try:
+        conn = await get_db()
+        
+        # Get the common question
+        question = await conn.fetchrow(
+            """SELECT question_code, question_text, question_type, 
+                      options, voice_prompt
+               FROM questions 
+               WHERE question_code = 'B' AND is_active = true
+               LIMIT 1"""
+        )
+        
+        if not question:
+            # Fallback hardcoded question
+            return {
+                "success": True,
+                "question": {
+                    "question_text": "What do you want to achieve?",
+                    "options": [
+                        {"label": "🚀 Advance career", "value": "career"},
+                        {"label": "💪 Feel more confident", "value": "confident"},
+                        {"label": "✨ Develop a stronger presence", "value": "presence"},
+                        {"label": "🗣️ Become more persuasive", "value": "persuasive"},
+                        {"label": "🧘 Overcome social anxiety", "value": "anxiety"},
+                        {"label": "🤝 Be understood by others", "value": "understood"}
+                    ]
+                }
+            }
+        
+        # Parse options if stored as JSON
+        options = question["options"]
+        if isinstance(options, str):
+            try:
+                options = json.loads(options)
+            except:
+                options = []
+        
+        return {
+            "success": True,
+            "question": {
+                "question_text": question["question_text"],
+                "options": options
+            }
+        }
+    except Exception as e:
+        print(f"❌ Error getting common question: {e}")
+        # Return fallback
+        return {
+            "success": True,
+            "question": {
+                "question_text": "What do you want to achieve?",
+                "options": [
+                    {"label": "🚀 Advance career", "value": "career"},
+                    {"label": "💪 Feel more confident", "value": "confident"},
+                    {"label": "✨ Develop a stronger presence", "value": "presence"},
+                    {"label": "🗣️ Become more persuasive", "value": "persuasive"},
+                    {"label": "🧘 Overcome social anxiety", "value": "anxiety"},
+                    {"label": "🤝 Be understood by others", "value": "understood"}
+                ]
+            }
+        }
+    finally:
+        if conn:
+            await conn.close()
+
+# ============================================================
+# RESPONSES
+# ============================================================
+@app.post("/api/responses")
+async def submit_response(data: ResponseSubmitRequest):
+    # ... existing code ...
+
+
+# ============================================================
 # RESPONSES
 # ============================================================
 @app.post("/api/responses")

@@ -344,40 +344,129 @@ async def get_common_question():
 # ============================================================
 @app.post("/api/responses")
 async def submit_response(data: ResponseSubmitRequest):
+    """
+    Save a response against the assessment session.
+
+    IMPORTANT:
+    user_id is intentionally NOT stored here.
+    The user is anonymous until assessment completion.
+    The session_id is the identity of the assessment attempt.
+    """
+
     conn = None
+
     try:
         if not data.session_id or not data.question_code:
-            raise HTTPException(status_code=400, detail="session_id and question_code are required")
-        
+            raise HTTPException(
+                status_code=400,
+                detail="session_id and question_code are required"
+            )
+
         conn = await get_db()
+
+        # ----------------------------------------------------
+        # 1. Verify session exists
+        # ----------------------------------------------------
         session = await conn.fetchrow(
-            "SELECT session_id, user_id FROM assessment_sessions WHERE session_id = $1",
+            """
+            SELECT session_id, user_id, user_category
+            FROM assessment_sessions
+            WHERE session_id = $1
+            """,
             data.session_id
         )
+
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found"
+            )
+
+        # ----------------------------------------------------
+        # 2. Find the question
+        # ----------------------------------------------------
         question = await conn.fetchrow(
-            "SELECT question_id, question_type FROM questions WHERE question_code = $1",
+            """
+            SELECT question_id, question_code, question_type
+            FROM questions
+            WHERE question_code = $1
+            """,
             data.question_code
         )
+
         if not question:
-            raise HTTPException(status_code=404, detail="Question not found")
-        
-        await conn.execute(
-            """INSERT INTO responses 
-               (session_id, user_id, question_id, selected_option, text_response, response_type)
-               VALUES ($1, $2, $3, $4, $5, $6)""",
-            data.session_id, session["user_id"], question["question_id"],
-            data.selected_option, data.text_response,
-            "choice" if data.selected_option else "text"
+            raise HTTPException(
+                status_code=404,
+                detail=f"Question not found: {data.question_code}"
+            )
+
+        # ----------------------------------------------------
+        # 3. Determine response type
+        # ----------------------------------------------------
+        if data.selected_option:
+            response_type = "choice"
+        elif data.text_response:
+            response_type = "text"
+        else:
+            response_type = "unknown"
+
+        # ----------------------------------------------------
+        # 4. Save response
+        #
+        # NO user_id here.
+        # Session identifies the anonymous assessment.
+        # ----------------------------------------------------
+        response_id = await conn.fetchval(
+            """
+            INSERT INTO responses
+            (
+                session_id,
+                question_id,
+                selected_option,
+                text_response,
+                response_type
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING response_id
+            """,
+            data.session_id,
+            question["question_id"],
+            data.selected_option,
+            data.text_response,
+            response_type
         )
-        
-        return {"success": True, "message": "Response saved successfully"}
+
+        print("==========================================")
+        print("✅ RESPONSE SAVED")
+        print("Session ID       :", data.session_id)
+        print("Question Code    :", data.question_code)
+        print("Question ID      :", question["question_id"])
+        print("Selected Option  :", data.selected_option)
+        print("Response Type    :", response_type)
+        print("Response ID      :", response_id)
+        print("==========================================")
+
+        return {
+            "success": True,
+            "message": "Response saved successfully",
+            "response_id": str(response_id),
+            "session_id": data.session_id,
+            "question_code": data.question_code
+        }
+
     except HTTPException:
         raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("❌ RESPONSE SAVE ERROR")
+        print("Error type:", type(e).__name__)
+        print("Error:", str(e))
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
     finally:
         if conn:
             await conn.close()
@@ -387,57 +476,146 @@ async def submit_response(data: ResponseSubmitRequest):
 # ============================================================
 @app.post("/api/voice/analyze")
 async def analyze_voice(data: VoiceAnalysisRequest):
+
     conn = None
+
     try:
         if not data.session_id or not data.transcript:
-            raise HTTPException(status_code=400, detail="session_id and transcript are required")
-        
+            raise HTTPException(
+                status_code=400,
+                detail="session_id and transcript are required"
+            )
+
         conn = await get_db()
+
+        # ----------------------------------------------------
+        # 1. Verify session
+        # ----------------------------------------------------
         session = await conn.fetchrow(
-            "SELECT session_id, user_id FROM assessment_sessions WHERE session_id = $1",
+            """
+            SELECT session_id, user_id, user_category
+            FROM assessment_sessions
+            WHERE session_id = $1
+            """,
             data.session_id
         )
+
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found"
+            )
+
+        # ----------------------------------------------------
+        # 2. Find voice question
+        # ----------------------------------------------------
         question = await conn.fetchrow(
-            "SELECT question_id FROM questions WHERE question_code = $1",
+            """
+            SELECT question_id, question_code, question_type
+            FROM questions
+            WHERE question_code = $1
+            """,
             data.question_code
         )
+
         if not question:
-            raise HTTPException(status_code=404, detail="Voice question not found")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"Voice question not found: {data.question_code}"
+            )
+
+        # ----------------------------------------------------
+        # 3. Save transcript
+        #
+        # NO user_id.
+        # ----------------------------------------------------
         response_id = await conn.fetchval(
-            """INSERT INTO responses 
-               (session_id, user_id, question_id, response_type, text_response) 
-               VALUES ($1, $2, $3, 'voice', $4) 
-               RETURNING response_id""",
-            data.session_id, session["user_id"], question["question_id"], data.transcript
+            """
+            INSERT INTO responses
+            (
+                session_id,
+                question_id,
+                response_type,
+                text_response
+            )
+            VALUES ($1, $2, 'voice', $3)
+            RETURNING response_id
+            """,
+            data.session_id,
+            question["question_id"],
+            data.transcript
         )
-        
-        # Simple analysis placeholder
+
+        # ----------------------------------------------------
+        # 4. Temporary voice analysis
+        # ----------------------------------------------------
         analysis = {
-            "clarity": 70, "structure": 65, "confidence": 75,
-            "presence": 70, "connection": 68, "influence": 72,
-            "overall": 70, "feedback": "Good communication skills with room for improvement."
+            "clarity": 70,
+            "structure": 65,
+            "confidence": 75,
+            "presence": 70,
+            "connection": 68,
+            "influence": 72,
+            "overall": 70,
+            "feedback": "Good communication skills with room for improvement."
         }
-        
+
+        # ----------------------------------------------------
+        # 5. Save voice analysis
+        # ----------------------------------------------------
         await conn.execute(
-            """INSERT INTO voice_analysis 
-               (response_id, clarity_score, structure_score, confidence_score, 
-                presence_score, connection_score, influence_score, overall_score, analysis_json)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+            """
+            INSERT INTO voice_analysis
+            (
+                response_id,
+                clarity_score,
+                structure_score,
+                confidence_score,
+                presence_score,
+                connection_score,
+                influence_score,
+                overall_score,
+                analysis_json
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
             response_id,
-            analysis['clarity'], analysis['structure'], analysis['confidence'],
-            analysis['presence'], analysis['connection'], analysis['influence'],
-            analysis['overall'], json.dumps(analysis)
+            analysis["clarity"],
+            analysis["structure"],
+            analysis["confidence"],
+            analysis["presence"],
+            analysis["connection"],
+            analysis["influence"],
+            analysis["overall"],
+            json.dumps(analysis)
         )
-        
-        return {"success": True, "analysis": analysis}
+
+        print("==========================================")
+        print("🎙️ VOICE RESPONSE SAVED")
+        print("Session ID   :", data.session_id)
+        print("Question     :", data.question_code)
+        print("Response ID  :", response_id)
+        print("==========================================")
+
+        return {
+            "success": True,
+            "response_id": str(response_id),
+            "analysis": analysis
+        }
+
     except HTTPException:
         raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("❌ VOICE ANALYSIS ERROR")
+        print("Error type:", type(e).__name__)
+        print("Error:", str(e))
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
     finally:
         if conn:
             await conn.close()

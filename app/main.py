@@ -393,15 +393,6 @@ async def get_common_question():
 # ============================================================
 @app.post("/api/responses")
 async def submit_response(data: ResponseSubmitRequest):
-    """
-    Save a response against the assessment session.
-
-    IMPORTANT:
-    user_id is intentionally NOT stored here.
-    The user is anonymous until assessment completion.
-    The session_id is the identity of the assessment attempt.
-    """
-
     conn = None
 
     try:
@@ -413,6 +404,142 @@ async def submit_response(data: ResponseSubmitRequest):
 
         conn = await get_db()
 
+        # ----------------------------------------------------
+        # Verify session
+        # ----------------------------------------------------
+        session = await conn.fetchrow(
+            """
+            SELECT session_id
+            FROM assessment_sessions
+            WHERE session_id = $1
+            """,
+            data.session_id
+        )
+
+        if not session:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found"
+            )
+
+        # ----------------------------------------------------
+        # First check universal questions A / B
+        # ----------------------------------------------------
+        question = await conn.fetchrow(
+            """
+            SELECT question_id, question_type
+            FROM questions
+            WHERE question_code = $1
+              AND is_active = true
+            """,
+            data.question_code
+        )
+
+        response_type = (
+            "choice"
+            if data.selected_option
+            else "text"
+        )
+
+        # ----------------------------------------------------
+        # A / B
+        # ----------------------------------------------------
+        if question:
+
+            await conn.execute(
+                """
+                INSERT INTO responses
+                (
+                    session_id,
+                    question_id,
+                    selected_option,
+                    text_response,
+                    response_type
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                data.session_id,
+                question["question_id"],
+                data.selected_option,
+                data.text_response,
+                response_type
+            )
+
+        else:
+
+            # ------------------------------------------------
+            # Category question Q1-Q10
+            # ------------------------------------------------
+            category_question = await conn.fetchrow(
+                """
+                SELECT category_question_id, is_voice
+                FROM category_questions
+                WHERE question_number = $1
+                AND category_code = (
+                    SELECT user_category
+                    FROM assessment_sessions
+                    WHERE session_id = $2
+                )
+                """,
+                data.question_code,
+                data.session_id
+            )
+
+            if not category_question:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Question {data.question_code} not found"
+                )
+
+            response_type = (
+                "voice"
+                if category_question["is_voice"]
+                else (
+                    "choice"
+                    if data.selected_option
+                    else "text"
+                )
+            )
+
+            await conn.execute(
+                """
+                INSERT INTO responses
+                (
+                    session_id,
+                    category_question_id,
+                    selected_option,
+                    text_response,
+                    response_type
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                data.session_id,
+                category_question["category_question_id"],
+                data.selected_option,
+                data.text_response,
+                response_type
+            )
+
+        return {
+            "success": True,
+            "message": "Response saved successfully",
+            "question_code": data.question_code
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print(f"❌ Error saving response: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+    finally:
+        if conn:
+            await conn.close()
         # ----------------------------------------------------
         # 1. Verify session exists
         # ----------------------------------------------------

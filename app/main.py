@@ -211,6 +211,26 @@ async def update_session_category(
 
         conn = await get_db()
 
+        valid_categories = [
+            "fresher",
+            "senior",
+            "manager",
+            "transition",
+            "business",
+            "student",
+            "undecided"
+        ]
+
+        if data.user_category not in valid_categories:
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid category '{data.user_category}'. "
+                    f"Valid categories: {', '.join(valid_categories)}"
+                )
+            )
+
         session = await conn.fetchrow(
             """
             SELECT session_id
@@ -237,14 +257,28 @@ async def update_session_category(
             session_id
         )
 
-        print(
-            f"✅ Category set: {data.user_category}"
+        # Verify the update actually happened
+        updated = await conn.fetchrow(
+            """
+            SELECT
+                session_id,
+                user_category
+            FROM assessment_sessions
+            WHERE session_id = $1
+            """,
+            session_id
         )
+
+        print("==========================================")
+        print("✅ CATEGORY UPDATED")
+        print("Session ID :", session_id)
+        print("Category   :", updated["user_category"])
+        print("==========================================")
 
         return {
             "success": True,
             "session_id": session_id,
-            "user_category": data.user_category
+            "user_category": updated["user_category"]
         }
 
     except HTTPException:
@@ -252,7 +286,7 @@ async def update_session_category(
 
     except Exception as e:
 
-        print("❌ Category error:", e)
+        print("❌ CATEGORY UPDATE ERROR:", str(e))
 
         raise HTTPException(
             status_code=500,

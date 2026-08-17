@@ -147,53 +147,102 @@ async def update_session_category(session_id: str, data: CategoryUpdateRequest):
 # ============================================================
 @app.get("/api/questions/{category_code}")
 async def get_category_questions(category_code: str):
-    """Get all questions for a specific category"""
+    """Get the 10 category-specific assessment questions."""
     conn = None
+
     try:
         conn = await get_db()
-        
-        # Check if category exists in category_mapping
-        category_exists = await conn.fetchrow(
-            "SELECT category_code FROM category_mapping WHERE category_code = $1",
-            category_code
-        )
-        
-        # Get questions from the unified questions table
+
         rows = await conn.fetch(
             """
-            SELECT question_code, question_text, question_type, 
-                   options, voice_prompt, display_order
-            FROM questions 
-            WHERE category = $1 AND is_active = true
+            SELECT
+                category_question_id,
+                category_code,
+                question_number,
+                question_text,
+                is_voice,
+                voice_prompt,
+                option_a,
+                option_b,
+                option_c,
+                option_d,
+                option_e,
+                option_f,
+                option_g,
+                display_order
+            FROM category_questions
+            WHERE category_code = $1
             ORDER BY display_order
             """,
             category_code
         )
-        
+
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No questions found for category: {category_code}"
+            )
+
         questions = []
+
         for row in rows:
-            options = row["options"]
-            if isinstance(options, str):
-                try:
-                    options = json.loads(options)
-                except:
-                    options = []
-            elif options is None:
-                options = []
-            
+
+            # Build options for choice questions
+            options = []
+
+            if not row["is_voice"]:
+                option_columns = [
+                    "option_a",
+                    "option_b",
+                    "option_c",
+                    "option_d",
+                    "option_e",
+                    "option_f",
+                    "option_g"
+                ]
+
+                for column in option_columns:
+                    value = row[column]
+
+                    if value:
+                        options.append(value)
+
             questions.append({
-                "question_code": row["question_code"],
+                "question_code": row["question_number"],
+                "category_question_id": row["category_question_id"],
                 "question_text": row["question_text"],
-                "question_type": row["question_type"],
-                "options": options if row["question_type"] == "choice" else [],
-                "voice_prompt": row["voice_prompt"] if row["question_type"] == "voice" else None,
+                "is_voice": row["is_voice"],
+                "question_type": "voice" if row["is_voice"] else "choice",
+                "voice_prompt": row["voice_prompt"] if row["is_voice"] else None,
+                "options": options,
                 "display_order": row["display_order"]
             })
-        
-        return {"success": True, "category": category_code, "questions": questions}
+
+        print(
+            f"✅ Loaded {len(questions)} questions "
+            f"for category: {category_code}"
+        )
+
+        return {
+            "success": True,
+            "category": category_code,
+            "questions": questions
+        }
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        print(f"❌ Error fetching questions: {e}")
-        return {"success": False, "error": str(e), "category": category_code, "questions": []}
+        print(
+            f"❌ Error fetching category questions "
+            f"for {category_code}: {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
     finally:
         if conn:
             await conn.close()

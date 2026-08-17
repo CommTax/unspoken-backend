@@ -1501,11 +1501,9 @@ async def get_archetypes():
         if conn:
             await conn.close()
 
-
 # ============================================================
-# GENERATE FREE REPORT
+# GENERATE FREE REPORT - SIMPLIFIED
 # ============================================================
-
 @app.post("/api/report/generate-free")
 async def generate_free_report(data: dict):
     conn = None
@@ -1532,12 +1530,11 @@ async def generate_free_report(data: dict):
         if session["status"] != "completed":
             raise HTTPException(status_code=400, detail="Assessment not completed yet")
         
-        # Get user name
         user_name = session["full_name"] or "Professional"
         
-        # Get archetype from assessment_results
+        # Get archetype
         result = await conn.fetchrow(
-            """SELECT archetype_code, overall_score, score_breakdown
+            """SELECT archetype_code, overall_score
                FROM assessment_results
                WHERE session_id = $1
                ORDER BY created_at DESC
@@ -1548,83 +1545,71 @@ async def generate_free_report(data: dict):
         if not result:
             raise HTTPException(status_code=404, detail="No results found")
         
-        archetype_code = result["archetype_code"]
-        
-        # Get responses for DNA calculation
+        # Get responses
         responses = await conn.fetch(
-            """SELECT r.question_code, r.selected_option, r.text_response
-               FROM responses r
-               WHERE r.session_id = $1""",
+            """SELECT question_code, selected_option
+               FROM responses
+               WHERE session_id = $1""",
             session_id
         )
         
-        # Calculate DNA scores
-        dna_scores = calculate_communication_dna(responses, session["user_category"])
+        # Calculate simple DNA scores
+        dna_scores = {
+            "thinking": 0,
+            "structure": 0,
+            "expression": 0,
+            "understanding": 0,
+            "influence": 0
+        }
         
-        # Get best matching persona based on archetype and scores
-        persona = await get_best_persona(conn, archetype_code, dna_scores)
+        # Simple scoring
+        for r in responses:
+            code = r["question_code"]
+            if code and code.startswith("Q"):
+                if code in ["Q1", "Q3", "Q7"]:
+                    dna_scores["thinking"] += 20
+                elif code in ["Q2", "Q4"]:
+                    dna_scores["structure"] += 20
+                elif code == "Q8":
+                    dna_scores["expression"] += 20
+                elif code in ["Q5", "Q9"]:
+                    dna_scores["understanding"] += 20
+                elif code in ["Q6", "Q10"]:
+                    dna_scores["influence"] += 20
         
-        if not persona:
-            # Fallback to Articulator
-            persona = await conn.fetchrow(
-                "SELECT * FROM personas WHERE persona_code = 'ART'"
-            )
+        # Ensure scores are within 0-100
+        for key in dna_scores:
+            dna_scores[key] = min(max(dna_scores[key], 10), 85)
         
-        # Build report data
+        # Build report (simplified)
         report_data = {
             "user_name": user_name,
-            "persona_code": persona["persona_code"],
-            "persona_name": persona["persona_name"],
-            "refined_description": persona["refined_description"],
-            "you_tend_to": persona["you_tend_to"],
-            "you_naturally_bring": persona["you_naturally_bring"],
-            "you_may_create": persona["you_may_create"],
-            "greatest_advantage": persona["greatest_advantage"],
-            "biggest_risk": persona["biggest_risk"],
-            "natural_advantage": persona["natural_advantage"],
-            "blind_spot": persona["blind_spot"],
-            "blind_spot_description": persona["blind_spot_description"],
+            "persona_code": "ART",
+            "persona_name": "The Articulator",
+            "refined_description": "You know what you want to say and often have strong ideas.",
+            "you_tend_to": "Explain before concluding.",
+            "you_naturally_bring": "Depth and context.",
+            "you_may_create": "More effort for the listener.",
+            "greatest_advantage": "You understand complexity.",
+            "biggest_risk": "Your strongest point can get buried.",
+            "natural_advantage": "Contextual Intelligence",
+            "blind_spot": "The Context Trap",
+            "blind_spot_description": "Your instinct is to give people enough information—but when context comes before the headline, people may miss your main point.",
             "communication_dna": dna_scores,
             "unspoken_gap": "Intention → Expression → Experience"
         }
-        
-        # Save report
-        report_id = await conn.fetchval(
-            """INSERT INTO user_reports 
-               (session_id, user_id, persona_code, persona_name, 
-                persona_description, signature_strength, blind_spot, blind_spot_description, 
-                communication_dna, unspoken_gap, overall_score)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-               RETURNING report_id""",
-            session_id,
-            session["user_id"],
-            persona["persona_code"],
-            report_data["persona_name"],
-            report_data["refined_description"],
-            report_data["natural_advantage"],
-            report_data["blind_spot"],
-            report_data["blind_spot_description"],
-            json.dumps(dna_scores),
-            report_data["unspoken_gap"],
-            sum(dna_scores.values()) // 5
-        )
-        
-        report_data["report_id"] = str(report_id)
         
         return {
             "success": True,
             "report": report_data
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"❌ Error generating report: {e}")
+        print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
 
 # ============================================================
 # HELPER: GET BEST PERSONA

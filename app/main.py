@@ -1502,16 +1502,20 @@ async def get_archetypes():
             await conn.close()
 
 # ============================================================
-# GENERATE FREE REPORT - SIMPLIFIED
+# GENERATE FREE REPORT - CORRECTED FOR YOUR SCHEMA
 # ============================================================
 @app.post("/api/report/generate-free")
 async def generate_free_report(data: dict):
     conn = None
     try:
+        print("=" * 50)
+        print("📝 GENERATE FREE REPORT")
+        
         session_id = data.get("session_id")
         if not session_id:
             raise HTTPException(status_code=400, detail="Session ID required")
         
+        print(f"🔍 Session ID: {session_id}")
         conn = await get_db()
         
         # Get session with user details
@@ -1531,8 +1535,11 @@ async def generate_free_report(data: dict):
             raise HTTPException(status_code=400, detail="Assessment not completed yet")
         
         user_name = session["full_name"] or "Professional"
+        print(f"✅ User: {user_name}")
+        print(f"✅ Status: {session['status']}")
+        print(f"✅ Category: {session['user_category']}")
         
-        # Get archetype
+        # Get archetype from assessment_results
         result = await conn.fetchrow(
             """SELECT archetype_code, overall_score
                FROM assessment_results
@@ -1545,15 +1552,31 @@ async def generate_free_report(data: dict):
         if not result:
             raise HTTPException(status_code=404, detail="No results found")
         
-        # Get responses
+        archetype_code = result["archetype_code"]
+        print(f"✅ Archetype: {archetype_code}")
+        
+        # ✅ CORRECTED: Get responses with question codes
+        # For A/B questions: use question_id → questions table
+        # For Q1-Q10: use category_question_id → category_questions table
         responses = await conn.fetch(
-            """SELECT question_code, selected_option
-               FROM responses
-               WHERE session_id = $1""",
+            """
+            SELECT 
+                r.selected_option,
+                r.text_response,
+                r.response_type,
+                q.question_code as universal_code,
+                cq.question_number as category_code
+            FROM responses r
+            LEFT JOIN questions q ON r.question_id = q.question_id
+            LEFT JOIN category_questions cq ON r.category_question_id = cq.category_question_id
+            WHERE r.session_id = $1
+            """,
             session_id
         )
         
-        # Calculate simple DNA scores
+        print(f"✅ Found {len(responses)} responses")
+        
+        # Calculate DNA scores
         dna_scores = {
             "thinking": 0,
             "structure": 0,
@@ -1562,42 +1585,93 @@ async def generate_free_report(data: dict):
             "influence": 0
         }
         
-        # Simple scoring
+        # Question to DNA dimension mapping
+        dimension_mapping = {
+            "Q1": "thinking",
+            "Q2": "structure",
+            "Q3": "thinking",
+            "Q4": "structure",
+            "Q5": "understanding",
+            "Q6": "influence",
+            "Q7": "thinking",
+            "Q8": "expression",
+            "Q9": "understanding",
+            "Q10": "influence"
+        }
+        
         for r in responses:
-            code = r["question_code"]
-            if code and code.startswith("Q"):
-                if code in ["Q1", "Q3", "Q7"]:
-                    dna_scores["thinking"] += 20
-                elif code in ["Q2", "Q4"]:
-                    dna_scores["structure"] += 20
-                elif code == "Q8":
-                    dna_scores["expression"] += 20
-                elif code in ["Q5", "Q9"]:
-                    dna_scores["understanding"] += 20
-                elif code in ["Q6", "Q10"]:
-                    dna_scores["influence"] += 20
+            # Get the question code (either universal or category)
+            code = r["universal_code"] or r["category_code"]
+            
+            # Skip A and B questions (routing questions)
+            if code in ["A", "B"]:
+                continue
+            
+            if code and code in dimension_mapping:
+                dimension = dimension_mapping[code]
+                # Add points based on selected option
+                selected = r["selected_option"]
+                if selected:
+                    # A=4, B=3, C=2, D=1
+                    if selected in ['A', 'a']:
+                        dna_scores[dimension] += 4
+                    elif selected in ['B', 'b']:
+                        dna_scores[dimension] += 3
+                    elif selected in ['C', 'c']:
+                        dna_scores[dimension] += 2
+                    elif selected in ['D', 'd']:
+                        dna_scores[dimension] += 1
+                    # Voice questions: give points based on text length
+                    elif r["response_type"] == "voice" and r["text_response"]:
+                        # Simple scoring: longer response = more points
+                        word_count = len(r["text_response"].split())
+                        if word_count > 20:
+                            dna_scores[dimension] += 3
+                        elif word_count > 10:
+                            dna_scores[dimension] += 2
+                        else:
+                            dna_scores[dimension] += 1
         
-        # Ensure scores are within 0-100
+        # Normalize to 0-100
+        max_score = 20  # 5 questions × 4 points max
         for key in dna_scores:
-            dna_scores[key] = min(max(dna_scores[key], 10), 85)
+            dna_scores[key] = min(round((dna_scores[key] / max_score) * 100), 100)
+            if dna_scores[key] < 10:
+                dna_scores[key] = 10
         
-        # Build report (simplified)
+        print(f"✅ DNA Scores: {dna_scores}")
+        
+        # Get persona from personas table
+        persona = await conn.fetchrow(
+            """SELECT * FROM personas WHERE archetype_code = $1 LIMIT 1""",
+            archetype_code
+        )
+        
+        if not persona:
+            # Fallback to Articulator
+            persona = await conn.fetchrow(
+                "SELECT * FROM personas WHERE persona_code = 'ART'"
+            )
+        
+        # Build report data
         report_data = {
             "user_name": user_name,
-            "persona_code": "ART",
-            "persona_name": "The Articulator",
-            "refined_description": "You know what you want to say and often have strong ideas.",
-            "you_tend_to": "Explain before concluding.",
-            "you_naturally_bring": "Depth and context.",
-            "you_may_create": "More effort for the listener.",
-            "greatest_advantage": "You understand complexity.",
-            "biggest_risk": "Your strongest point can get buried.",
-            "natural_advantage": "Contextual Intelligence",
-            "blind_spot": "The Context Trap",
-            "blind_spot_description": "Your instinct is to give people enough information—but when context comes before the headline, people may miss your main point.",
+            "persona_code": persona["persona_code"] if persona else "ART",
+            "persona_name": persona["persona_name"] if persona else "The Articulator",
+            "refined_description": persona["refined_description"] if persona else "You know what you want to say and often have strong ideas.",
+            "you_tend_to": persona["you_tend_to"] if persona else "Explain before concluding.",
+            "you_naturally_bring": persona["you_naturally_bring"] if persona else "Depth and context.",
+            "you_may_create": persona["you_may_create"] if persona else "More effort for the listener.",
+            "greatest_advantage": persona["greatest_advantage"] if persona else "You understand complexity.",
+            "biggest_risk": persona["biggest_risk"] if persona else "Your strongest point can get buried.",
+            "natural_advantage": persona["natural_advantage"] if persona else "Contextual Intelligence",
+            "blind_spot": persona["blind_spot"] if persona else "The Context Trap",
+            "blind_spot_description": persona["blind_spot_description"] if persona else "Your instinct is to give people enough information—but when context comes before the headline, people may miss your main point.",
             "communication_dna": dna_scores,
             "unspoken_gap": "Intention → Expression → Experience"
         }
+        
+        print("=" * 50)
         
         return {
             "success": True,
@@ -1606,11 +1680,12 @@ async def generate_free_report(data: dict):
         
     except Exception as e:
         print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             await conn.close()
-
 # ============================================================
 # HELPER: GET BEST PERSONA
 # ============================================================

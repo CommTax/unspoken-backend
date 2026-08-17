@@ -1234,7 +1234,7 @@ async def complete_assessment(
         # ----------------------------------------------------
         # SAVE RESULT
         # ----------------------------------------------------
-
+try:    
 await conn.execute(
     """
     INSERT INTO assessment_results

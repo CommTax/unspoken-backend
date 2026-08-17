@@ -204,14 +204,13 @@ async def update_session_category(
     session_id: str,
     data: CategoryUpdateRequest
 ):
-
     conn = None
 
     try:
-
         conn = await get_db()
 
-        valid_categories = [
+        # Validate category
+        allowed_categories = {
             "fresher",
             "senior",
             "manager",
@@ -219,18 +218,15 @@ async def update_session_category(
             "business",
             "student",
             "undecided"
-        ]
+        }
 
-        if data.user_category not in valid_categories:
-
+        if data.user_category not in allowed_categories:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Invalid category '{data.user_category}'. "
-                    f"Valid categories: {', '.join(valid_categories)}"
-                )
+                detail=f"Invalid category: {data.user_category}"
             )
 
+        # Check session
         session = await conn.fetchrow(
             """
             SELECT session_id
@@ -241,12 +237,12 @@ async def update_session_category(
         )
 
         if not session:
-
             raise HTTPException(
                 status_code=404,
                 detail="Session not found"
             )
 
+        # IMPORTANT: Save category
         await conn.execute(
             """
             UPDATE assessment_sessions
@@ -257,12 +253,10 @@ async def update_session_category(
             session_id
         )
 
-        # Verify the update actually happened
-        updated = await conn.fetchrow(
+        # Verify it was actually saved
+        saved = await conn.fetchrow(
             """
-            SELECT
-                session_id,
-                user_category
+            SELECT session_id, user_category
             FROM assessment_sessions
             WHERE session_id = $1
             """,
@@ -270,23 +264,22 @@ async def update_session_category(
         )
 
         print("==========================================")
-        print("✅ CATEGORY UPDATED")
+        print("✅ CATEGORY SAVED")
         print("Session ID :", session_id)
-        print("Category   :", updated["user_category"])
+        print("Category   :", saved["user_category"])
         print("==========================================")
 
         return {
             "success": True,
             "session_id": session_id,
-            "user_category": updated["user_category"]
+            "user_category": saved["user_category"]
         }
 
     except HTTPException:
         raise
 
     except Exception as e:
-
-        print("❌ CATEGORY UPDATE ERROR:", str(e))
+        print("❌ CATEGORY SAVE ERROR:", str(e))
 
         raise HTTPException(
             status_code=500,
@@ -294,7 +287,6 @@ async def update_session_category(
         )
 
     finally:
-
         if conn:
             await conn.close()
 

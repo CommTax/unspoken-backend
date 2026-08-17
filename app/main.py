@@ -569,10 +569,6 @@ async def get_category_questions(category_code: str):
 
 
 # ============================================================
-# SAVE RESPONSE
-# ============================================================
-
-# ============================================================
 # RESPONSES
 # ============================================================
 
@@ -1032,6 +1028,7 @@ async def analyze_voice(data: VoiceAnalysisRequest):
         if conn:
             await conn.close()
 
+
 # ============================================================
 # COMPLETE ASSESSMENT
 # ============================================================
@@ -1219,7 +1216,7 @@ async def complete_assessment(
         )
 
         # ----------------------------------------------------
-        # SAVE RESULT - ✅ CORRECTLY INDENTED
+        # SAVE RESULT
         # ----------------------------------------------------
 
         await conn.execute(
@@ -1499,9 +1496,16 @@ async def get_archetypes():
             detail=str(e)
         )
 
-    # ============================================================
+    finally:
+
+        if conn:
+            await conn.close()
+
+
+# ============================================================
 # GENERATE FREE REPORT
 # ============================================================
+
 @app.post("/api/report/generate-free")
 async def generate_free_report(data: dict):
     conn = None
@@ -1554,7 +1558,7 @@ async def generate_free_report(data: dict):
             session_id
         )
         
-        # Calculate DNA scores (you'll need to implement this function)
+        # Calculate DNA scores
         dna_scores = calculate_communication_dna(responses, session["user_category"])
         
         # Get best matching persona based on archetype and scores
@@ -1621,9 +1625,11 @@ async def generate_free_report(data: dict):
         if conn:
             await conn.close()
 
+
 # ============================================================
 # HELPER: GET BEST PERSONA
 # ============================================================
+
 async def get_best_persona(conn, archetype_code, dna_scores):
     """
     Find the best matching persona based on archetype and DNA scores.
@@ -1650,15 +1656,16 @@ async def get_best_persona(conn, archetype_code, dna_scores):
     for persona in personas:
         # Simple matching logic - you can make this more sophisticated
         # For now, return the first one for the archetype
-        # (You can implement more complex scoring here)
         if best_match is None:
             best_match = persona
     
     return best_match
 
+
 # ============================================================
 # HELPER: CALCULATE COMMUNICATION DNA
 # ============================================================
+
 def calculate_communication_dna(responses, user_category):
     """
     Calculate the 5 DNA scores based on user responses.
@@ -1718,7 +1725,3 @@ def calculate_communication_dna(responses, user_category):
             dna_scores[dimension] = 10
     
     return dna_scores
-    finally:
-
-        if conn:
-            await conn.close()

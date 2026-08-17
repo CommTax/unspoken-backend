@@ -1032,7 +1032,6 @@ async def analyze_voice(data: VoiceAnalysisRequest):
         if conn:
             await conn.close()
 
-
 # ============================================================
 # COMPLETE ASSESSMENT
 # ============================================================
@@ -1136,10 +1135,6 @@ async def complete_assessment(
 
         # ----------------------------------------------------
         # GET ALL RESPONSES
-        #
-        # IMPORTANT:
-        # A/B use question_id
-        # Q1-Q10 use category_question_id
         # ----------------------------------------------------
 
         responses = await conn.fetch(
@@ -1167,11 +1162,6 @@ async def complete_assessment(
             data.session_id
         )
 
-        print(
-            f"📊 Found {len(responses)} responses "
-            f"for session {data.session_id}"
-        )
-
         # ----------------------------------------------------
         # BASIC SCORE
         # ----------------------------------------------------
@@ -1197,9 +1187,6 @@ async def complete_assessment(
                 response["category_question_code"]
                 or response["universal_question_code"]
             )
-
-            # Temporary scoring.
-            # Replace with your real scoring engine later.
 
             if code and str(code).startswith("Q"):
 
@@ -1232,7 +1219,7 @@ async def complete_assessment(
         )
 
         # ----------------------------------------------------
-        # SAVE RESULT - CORRECTED INDENTATION
+        # SAVE RESULT - ✅ CORRECTLY INDENTED
         # ----------------------------------------------------
 
         await conn.execute(

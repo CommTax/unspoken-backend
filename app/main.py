@@ -8,8 +8,10 @@ from pydantic import BaseModel
 import re
 import uuid
 import json
+import google.generativeai as genai
 
 load_dotenv()
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 app = FastAPI(
     title="Unspoken Backend",
@@ -841,20 +843,15 @@ async def submit_response(data: ResponseSubmitRequest):
         if conn:
             await conn.close()
 
-
 # ============================================================
-# VOICE ANALYSIS
+# VOICE ANALYSIS - WITH GEMINI AI
 # ============================================================
 
 @app.post("/api/voice/analyze")
 async def analyze_voice(data: VoiceAnalysisRequest):
-
     conn = None
-
     try:
-
         if not data.session_id or not data.transcript:
-
             raise HTTPException(
                 status_code=400,
                 detail="session_id and transcript are required"
@@ -874,7 +871,6 @@ async def analyze_voice(data: VoiceAnalysisRequest):
         )
 
         if not session:
-
             raise HTTPException(
                 status_code=404,
                 detail="Session not found"
@@ -882,10 +878,7 @@ async def analyze_voice(data: VoiceAnalysisRequest):
 
         category = session["user_category"]
 
-        # ----------------------------------------------------
         # FIND CATEGORY VOICE QUESTION
-        # ----------------------------------------------------
-
         category_question = await conn.fetchrow(
             """
             SELECT
@@ -901,7 +894,6 @@ async def analyze_voice(data: VoiceAnalysisRequest):
         )
 
         if not category_question:
-
             raise HTTPException(
                 status_code=404,
                 detail=(
@@ -910,10 +902,7 @@ async def analyze_voice(data: VoiceAnalysisRequest):
                 )
             )
 
-        # ----------------------------------------------------
         # SAVE TRANSCRIPT
-        # ----------------------------------------------------
-
         response_id = await conn.fetchval(
             """
             INSERT INTO responses
@@ -939,42 +928,25 @@ async def analyze_voice(data: VoiceAnalysisRequest):
             data.transcript
         )
 
-        # ----------------------------------------------------
-        # TEMPORARY ANALYSIS
-        # ----------------------------------------------------
+        # ✅ ANALYZE WITH GEMINI AI
+        analysis = await analyze_voice_with_gemini(
+            transcript=data.transcript,
+            user_category=category,
+            question_code=data.question_code
+        )
 
-        analysis = {
-
-            "clarity": 70,
-            "structure": 65,
-            "confidence": 75,
-            "presence": 70,
-            "connection": 68,
-            "influence": 72,
-            "overall": 70,
-
-            "feedback":
-                "Good communication skills with room for improvement."
-
-        }
-
-        # ----------------------------------------------------
-        # SAVE ANALYSIS
-        # ----------------------------------------------------
-
+        # ✅ SAVE AI ANALYSIS RESULTS
         await conn.execute(
             """
             INSERT INTO voice_analysis
             (
                 response_id,
-                clarity_score,
-                structure_score,
-                confidence_score,
-                presence_score,
-                connection_score,
-                influence_score,
-                overall_score,
-                analysis_json
+                session_id,
+                ai_persona_code,
+                ai_persona_name,
+                ai_comments,
+                ai_confidence,
+                ai_analysis_timestamp
             )
             VALUES
             (
@@ -984,26 +956,22 @@ async def analyze_voice(data: VoiceAnalysisRequest):
                 $4,
                 $5,
                 $6,
-                $7,
-                $8,
-                $9
+                NOW()
             )
             """,
             response_id,
-            analysis["clarity"],
-            analysis["structure"],
-            analysis["confidence"],
-            analysis["presence"],
-            analysis["connection"],
-            analysis["influence"],
-            analysis["overall"],
-            json.dumps(analysis)
+            data.session_id,
+            analysis.get("persona_code"),
+            analysis.get("persona_name"),
+            json.dumps(analysis.get("comments", [])),
+            analysis.get("confidence", 70)
         )
 
-        print("🎙️ VOICE RESPONSE SAVED")
+        print("🎙️ VOICE RESPONSE SAVED WITH AI ANALYSIS")
         print("Session:", data.session_id)
         print("Question:", data.question_code)
         print("Response:", response_id)
+        print("AI Persona:", analysis.get("persona_name"))
 
         return {
             "success": True,
@@ -1013,20 +981,117 @@ async def analyze_voice(data: VoiceAnalysisRequest):
 
     except HTTPException:
         raise
-
     except Exception as e:
-
         print("❌ VOICE ANALYSIS ERROR:", e)
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
-
         if conn:
             await conn.close()
+
+
+# ============================================================
+# GEMINI AI VOICE ANALYSIS FUNCTION
+# ============================================================
+
+async def analyze_voice_with_gemini(transcript: str, user_category: str, question_code: str):
+    """
+    Analyze voice transcript using Google Gemini AI
+    Returns: persona_code, persona_name, comments, confidence
+    """
+    try:
+        # Get the Gemini model
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # List of 12 personas for AI to choose from
+        persona_list = """
+        1. The Translator (TRANS) - Makes complex things simple, high emotional intelligence
+        2. The Amplifier (AMP) - Clear presence, impactful delivery
+        3. The Articulator (ART) - Explains clearly, provides depth
+        4. The Interpreter (INTERP) - Translates ideas, but loses nuance
+        5. The Filter (FILTER) - Valuable insights, but overloads with information
+        6. The Mumbler (MUMBLE) - Good thoughts, unclear delivery
+        7. The Eclipsed (ECLIPSE) - Good ideas, overlooked by others
+        8. The Unheard (UNHEARD) - Honest but not connecting
+        9. The Overlooked (OVERLOOK) - Consistent but invisible
+        10. The Faded (FADED) - Strong start, loses momentum
+        11. The Ghost (GHOST) - Present but not heard
+        12. The Disconnected (DISCON) - Significant gap between thinking and speaking
+        """
+        
+        prompt = f"""
+        You are a communication expert analyzing a user's voice response.
+        
+        User Category: {user_category}
+        Question Code: {question_code}
+        
+        User's Transcript: "{transcript}"
+        
+        Based on this transcript, please:
+        
+        1. Identify which of the 12 personas best matches this user:
+        {persona_list}
+        
+        2. Provide 2-3 specific, actionable comments about their communication style based on what they said.
+        
+        Return ONLY valid JSON in this exact format:
+        {{
+            "persona_code": "ART",
+            "persona_name": "The Articulator",
+            "comments": [
+                "You clearly explained the concept using relatable examples, which shows strong clarity.",
+                "Your enthusiasm made the topic engaging, though you could benefit from more structure."
+            ],
+            "confidence": 85
+        }}
+        
+        Persona codes are: TRANS, AMP, ART, INTERP, FILTER, MUMBLE, ECLIPSE, UNHEARD, OVERLOOK, FADED, GHOST, DISCON
+        """
+        
+        # Call Gemini AI
+        response = model.generate_content(prompt)
+        result = response.text
+        
+        # Parse JSON from AI response
+        import re
+        json_match = re.search(r'\{.*\}', result, re.DOTALL)
+        if json_match:
+            analysis = json.loads(json_match.group())
+        else:
+            # Fallback if JSON parsing fails
+            analysis = {
+                "persona_code": "ART",
+                "persona_name": "The Articulator",
+                "comments": [
+                    "Your response shows good effort in explaining the topic.",
+                    "Consider adding more structure to your delivery."
+                ],
+                "confidence": 70
+            }
+        
+        # Validate persona_code exists in our list
+        valid_personas = ["TRANS", "AMP", "ART", "INTERP", "FILTER", "MUMBLE", 
+                         "ECLIPSE", "UNHEARD", "OVERLOOK", "FADED", "GHOST", "DISCON"]
+        
+        if analysis.get("persona_code") not in valid_personas:
+            analysis["persona_code"] = "ART"
+            analysis["persona_name"] = "The Articulator"
+        
+        return analysis
+        
+    except Exception as e:
+        print(f"❌ Gemini AI analysis error: {e}")
+        # Return fallback analysis
+        return {
+            "persona_code": "ART",
+            "persona_name": "The Articulator",
+            "comments": [
+                "Your response shows genuine effort in communicating your thoughts.",
+                "Keep practicing to develop more clarity and confidence in your delivery."
+            ],
+            "confidence": 65
+        }
 
 
 # ============================================================
@@ -1501,8 +1566,9 @@ async def get_archetypes():
         if conn:
             await conn.close()
 
+
 # ============================================================
-# GENERATE FREE REPORT - CORRECTED FOR YOUR SCHEMA
+# GENERATE FREE REPORT - WITH VOICE PERSONA
 # ============================================================
 @app.post("/api/report/generate-free")
 async def generate_free_report(data: dict):
@@ -1555,9 +1621,20 @@ async def generate_free_report(data: dict):
         archetype_code = result["archetype_code"]
         print(f"✅ Archetype: {archetype_code}")
         
-        # ✅ CORRECTED: Get responses with question codes
-        # For A/B questions: use question_id → questions table
-        # For Q1-Q10: use category_question_id → category_questions table
+        # ✅ GET AI VOICE PERSONA (if available)
+        voice_analysis = await conn.fetchrow(
+            """SELECT ai_persona_code, ai_persona_name, ai_comments, ai_confidence
+               FROM voice_analysis
+               WHERE session_id = $1
+               ORDER BY ai_analysis_timestamp DESC
+               LIMIT 1""",
+            session_id
+        )
+        
+        if voice_analysis:
+            print(f"✅ Voice Persona: {voice_analysis['ai_persona_name']} (Confidence: {voice_analysis['ai_confidence']}%)")
+        
+        # Get responses
         responses = await conn.fetch(
             """
             SELECT 
@@ -1585,34 +1662,21 @@ async def generate_free_report(data: dict):
             "influence": 0
         }
         
-        # Question to DNA dimension mapping
         dimension_mapping = {
-            "Q1": "thinking",
-            "Q2": "structure",
-            "Q3": "thinking",
-            "Q4": "structure",
-            "Q5": "understanding",
-            "Q6": "influence",
-            "Q7": "thinking",
-            "Q8": "expression",
-            "Q9": "understanding",
+            "Q1": "thinking", "Q2": "structure", "Q3": "thinking",
+            "Q4": "structure", "Q5": "understanding", "Q6": "influence",
+            "Q7": "thinking", "Q8": "expression", "Q9": "understanding",
             "Q10": "influence"
         }
         
         for r in responses:
-            # Get the question code (either universal or category)
             code = r["universal_code"] or r["category_code"]
-            
-            # Skip A and B questions (routing questions)
             if code in ["A", "B"]:
                 continue
-            
             if code and code in dimension_mapping:
                 dimension = dimension_mapping[code]
-                # Add points based on selected option
                 selected = r["selected_option"]
                 if selected:
-                    # A=4, B=3, C=2, D=1
                     if selected in ['A', 'a']:
                         dna_scores[dimension] += 4
                     elif selected in ['B', 'b']:
@@ -1621,9 +1685,7 @@ async def generate_free_report(data: dict):
                         dna_scores[dimension] += 2
                     elif selected in ['D', 'd']:
                         dna_scores[dimension] += 1
-                    # Voice questions: give points based on text length
                     elif r["response_type"] == "voice" and r["text_response"]:
-                        # Simple scoring: longer response = more points
                         word_count = len(r["text_response"].split())
                         if word_count > 20:
                             dna_scores[dimension] += 3
@@ -1632,8 +1694,7 @@ async def generate_free_report(data: dict):
                         else:
                             dna_scores[dimension] += 1
         
-        # Normalize to 0-100
-        max_score = 20  # 5 questions × 4 points max
+        max_score = 20
         for key in dna_scores:
             dna_scores[key] = min(round((dna_scores[key] / max_score) * 100), 100)
             if dna_scores[key] < 10:
@@ -1641,34 +1702,54 @@ async def generate_free_report(data: dict):
         
         print(f"✅ DNA Scores: {dna_scores}")
         
-        # Get persona from personas table
-        persona = await conn.fetchrow(
+        # Determine which persona to use
+        assessment_persona = await conn.fetchrow(
             """SELECT * FROM personas WHERE archetype_code = $1 LIMIT 1""",
             archetype_code
         )
         
-        if not persona:
-            # Fallback to Articulator
-            persona = await conn.fetchrow(
+        if not assessment_persona:
+            assessment_persona = await conn.fetchrow(
                 "SELECT * FROM personas WHERE persona_code = 'ART'"
             )
         
-        # Build report data
+        primary_persona = assessment_persona
+        persona_source = "Assessment"
+        
+        # Use AI persona if confidence > 70%
+        if voice_analysis and voice_analysis["ai_confidence"] and voice_analysis["ai_confidence"] > 70:
+            ai_persona = await conn.fetchrow(
+                "SELECT * FROM personas WHERE persona_code = $1",
+                voice_analysis["ai_persona_code"]
+            )
+            if ai_persona:
+                primary_persona = ai_persona
+                persona_source = "AI Voice Analysis"
+                print(f"✅ Using AI Persona: {primary_persona['persona_name']}")
+        
+        # Build report
         report_data = {
             "user_name": user_name,
-            "persona_code": persona["persona_code"] if persona else "ART",
-            "persona_name": persona["persona_name"] if persona else "The Articulator",
-            "refined_description": persona["refined_description"] if persona else "You know what you want to say and often have strong ideas.",
-            "you_tend_to": persona["you_tend_to"] if persona else "Explain before concluding.",
-            "you_naturally_bring": persona["you_naturally_bring"] if persona else "Depth and context.",
-            "you_may_create": persona["you_may_create"] if persona else "More effort for the listener.",
-            "greatest_advantage": persona["greatest_advantage"] if persona else "You understand complexity.",
-            "biggest_risk": persona["biggest_risk"] if persona else "Your strongest point can get buried.",
-            "natural_advantage": persona["natural_advantage"] if persona else "Contextual Intelligence",
-            "blind_spot": persona["blind_spot"] if persona else "The Context Trap",
-            "blind_spot_description": persona["blind_spot_description"] if persona else "Your instinct is to give people enough information—but when context comes before the headline, people may miss your main point.",
+            "persona_code": primary_persona["persona_code"],
+            "persona_name": primary_persona["persona_name"],
+            "refined_description": primary_persona["refined_description"],
+            "you_tend_to": primary_persona["you_tend_to"],
+            "you_naturally_bring": primary_persona["you_naturally_bring"],
+            "you_may_create": primary_persona["you_may_create"],
+            "greatest_advantage": primary_persona["greatest_advantage"],
+            "biggest_risk": primary_persona["biggest_risk"],
+            "natural_advantage": primary_persona["natural_advantage"],
+            "blind_spot": primary_persona["blind_spot"],
+            "blind_spot_description": primary_persona["blind_spot_description"],
             "communication_dna": dna_scores,
-            "unspoken_gap": "Intention → Expression → Experience"
+            "unspoken_gap": "Intention → Expression → Experience",
+            "voice_analysis": {
+                "persona_code": voice_analysis["ai_persona_code"] if voice_analysis else None,
+                "persona_name": voice_analysis["ai_persona_name"] if voice_analysis else None,
+                "comments": voice_analysis["ai_comments"] if voice_analysis else [],
+                "confidence": voice_analysis["ai_confidence"] if voice_analysis else 0
+            } if voice_analysis else None,
+            "persona_source": persona_source
         }
         
         print("=" * 50)
@@ -1686,6 +1767,7 @@ async def generate_free_report(data: dict):
     finally:
         if conn:
             await conn.close()
+
 # ============================================================
 # HELPER: GET BEST PERSONA
 # ============================================================

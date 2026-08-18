@@ -11,6 +11,8 @@ import json
 import google.generativeai as genai
 
 load_dotenv()
+
+# Configure Gemini AI
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 app = FastAPI(
@@ -843,6 +845,7 @@ async def submit_response(data: ResponseSubmitRequest):
         if conn:
             await conn.close()
 
+
 # ============================================================
 # VOICE ANALYSIS - WITH GEMINI AI
 # ============================================================
@@ -1570,6 +1573,7 @@ async def get_archetypes():
 # ============================================================
 # GENERATE FREE REPORT - WITH VOICE PERSONA
 # ============================================================
+
 @app.post("/api/report/generate-free")
 async def generate_free_report(data: dict):
     conn = None
@@ -1767,6 +1771,7 @@ async def generate_free_report(data: dict):
     finally:
         if conn:
             await conn.close()
+
 
 # ============================================================
 # HELPER: GET BEST PERSONA

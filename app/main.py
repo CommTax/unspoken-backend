@@ -467,24 +467,29 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
         if conn:
             await conn.close()
 
-
-# ============================================================
-# GET PAID PERSONA REPORT
-# ============================================================
-
 @app.get("/api/persona/paid-report/{user_id}")
 async def get_paid_persona_report(user_id: str):
     conn = None
     try:
         conn = await get_db()
 
+        # Get the persona result from paid_personas
         persona = await conn.fetchrow(
             """
             SELECT 
-                persona_code, persona_name, persona_description,
-                strength, strength_description, blind_spot, tagline,
-                structure_score, thinking_score, impact_score, 
-                expression_score, connection_score, dimension_percentages,
+                persona_code,
+                persona_name,
+                persona_description,
+                strength,
+                strength_description,
+                blind_spot,
+                tagline,
+                structure_score,
+                thinking_score,
+                impact_score,
+                expression_score,
+                connection_score,
+                dimension_percentages,
                 created_at
             FROM paid_personas
             WHERE user_id = $1
@@ -497,24 +502,82 @@ async def get_paid_persona_report(user_id: str):
         if not persona:
             return {"success": False, "message": "No persona found for this user"}
 
+        # Get user details
+        user = await conn.fetchrow(
+            """
+            SELECT full_name, email, phone
+            FROM users
+            WHERE user_id = $1
+            """,
+            user_id
+        )
+
+        # ✅ Get FULL persona content from persona_content table
+        content = await conn.fetchrow(
+            """
+            SELECT 
+                persona_code,
+                persona_name,
+                description,
+                detailed_description,
+                strength,
+                strength_description,
+                you_tend_to,
+                you_naturally_bring,
+                you_may_unintentionally_create,
+                greatest_communication_advantage,
+                biggest_communication_risk,
+                blind_spot,
+                blind_spot_description,
+                tagline,
+                communication_style,
+                how_others_experience_you,
+                growth_opportunities,
+                communication_gap,
+                recommended_actions
+            FROM persona_content
+            WHERE persona_code = $1
+            """,
+            persona['persona_code']
+        )
+
         scores = persona['dimension_percentages']
         if isinstance(scores, str):
             scores = json.loads(scores)
 
+        # Get competency write-ups
         competency_writeups = await get_competency_writeups(conn, scores)
+
+        # ✅ Build complete persona object with ALL fields
+        persona_data = {
+            "user_name": user['full_name'] if user else "Professional",
+            "user_email": user['email'] if user else "",
+            "code": persona['persona_code'],
+            "name": persona['persona_name'],
+            "description": persona['persona_description'],
+            "detailed_description": content['detailed_description'] if content else "",
+            "strength": persona['strength'],
+            "strength_description": persona['strength_description'],
+            "blind_spot": persona['blind_spot'],
+            "blind_spot_description": persona['blind_spot_description'],
+            "tagline": persona['tagline'],
+            # ✅ All persona_content fields
+            "you_tend_to": content['you_tend_to'] if content else "",
+            "you_naturally_bring": content['you_naturally_bring'] if content else "",
+            "you_may_unintentionally_create": content['you_may_unintentionally_create'] if content else "",
+            "greatest_communication_advantage": content['greatest_communication_advantage'] if content else "",
+            "biggest_communication_risk": content['biggest_communication_risk'] if content else "",
+            "communication_style": content['communication_style'] if content else "",
+            "how_others_experience_you": content['how_others_experience_you'] if content else "",
+            "growth_opportunities": content['growth_opportunities'] if content else "",
+            "communication_gap": content['communication_gap'] if content else "",
+            "recommended_actions": content['recommended_actions'] if content else ""
+        }
 
         return {
             "success": True,
             "report": {
-                "persona": {
-                    "code": persona['persona_code'],
-                    "name": persona['persona_name'],
-                    "description": persona['persona_description'],
-                    "strength": persona['strength'],
-                    "strength_description": persona['strength_description'],
-                    "blind_spot": persona['blind_spot'],
-                    "tagline": persona['tagline']
-                },
+                "persona": persona_data,
                 "competencies": competency_writeups,
                 "scores": scores,
                 "created_at": persona['created_at']
@@ -523,10 +586,13 @@ async def get_paid_persona_report(user_id: str):
 
     except Exception as e:
         print(f"❌ Error fetching report: {e}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "message": str(e)}
     finally:
         if conn:
             await conn.close()
+
 
 
 # ============================================================

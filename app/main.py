@@ -98,7 +98,7 @@ class UserCreate(BaseModel):
 
 class PersonaAssessmentRequest(BaseModel):
     user_details: UserCreate
-    responses: List[dict]  # [{"question_code": "Q1", "answer": 5}, ...]
+    responses: List[dict]
     type: str = 'paid'
 
 
@@ -245,7 +245,7 @@ async def get_competency_writeups(conn, competency_scores):
 
 
 # ============================================================
-# LEADS ENDPOINT (Keep existing)
+# LEADS ENDPOINT
 # ============================================================
 
 @app.post("/api/leads")
@@ -318,7 +318,7 @@ async def get_lead_by_email(email: str):
 
 
 # ============================================================
-# PAID PERSONA ASSESSMENT ENDPOINT (No Payment)
+# PAID PERSONA ASSESSMENT ENDPOINT
 # ============================================================
 
 @app.post("/api/persona/paid-assess")
@@ -428,20 +428,20 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
                 "code": persona_content['persona_code'],
                 "name": persona_content['persona_name'],
                 "description": persona_content['description'],
-                "detailed_description": persona_content['detailed_description'],
+                "detailed_description": persona_content['detailed_description'] or "",
                 "strength": persona_content['strength'],
                 "strength_description": persona_content['strength_description'],
-                "you_tend_to": persona_content['you_tend_to'],
-                "you_naturally_bring": persona_content['you_naturally_bring'],
-                "you_may_unintentionally_create": persona_content['you_may_unintentionally_create'],
-                "greatest_communication_advantage": persona_content['greatest_communication_advantage'],
-                "biggest_communication_risk": persona_content['biggest_communication_risk'],
+                "you_tend_to": persona_content['you_tend_to'] or "",
+                "you_naturally_bring": persona_content['you_naturally_bring'] or "",
+                "you_may_unintentionally_create": persona_content['you_may_unintentionally_create'] or "",
+                "greatest_communication_advantage": persona_content['greatest_communication_advantage'] or "",
+                "biggest_communication_risk": persona_content['biggest_communication_risk'] or "",
                 "blind_spot": persona_content['blind_spot'],
-                "blind_spot_description": persona_content['blind_spot_description'],
+                "blind_spot_description": persona_content['blind_spot_description'] or "",
                 "tagline": persona_content['tagline'],
-                "communication_style": persona_content['communication_style'],
-                "how_others_experience_you": persona_content['how_others_experience_you'],
-                "growth_opportunities": persona_content['growth_opportunities']
+                "communication_style": persona_content['communication_style'] or "",
+                "how_others_experience_you": persona_content['how_others_experience_you'] or "",
+                "growth_opportunities": persona_content['growth_opportunities'] or ""
             },
             "competencies": competency_writeups,
             "scores": competency_scores
@@ -466,6 +466,11 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
     finally:
         if conn:
             await conn.close()
+
+
+# ============================================================
+# GET PAID PERSONA REPORT - FIXED
+# ============================================================
 
 @app.get("/api/persona/paid-report/{user_id}")
 async def get_paid_persona_report(user_id: str):
@@ -512,34 +517,38 @@ async def get_paid_persona_report(user_id: str):
             user_id
         )
 
-        # ✅ Get FULL persona content from persona_content table
-        content = await conn.fetchrow(
-            """
-            SELECT 
-                persona_code,
-                persona_name,
-                description,
-                detailed_description,
-                strength,
-                strength_description,
-                you_tend_to,
-                you_naturally_bring,
-                you_may_unintentionally_create,
-                greatest_communication_advantage,
-                biggest_communication_risk,
-                blind_spot,
-                blind_spot_description,
-                tagline,
-                communication_style,
-                how_others_experience_you,
-                growth_opportunities,
-                communication_gap,
-                recommended_actions
-            FROM persona_content
-            WHERE persona_code = $1
-            """,
-            persona['persona_code']
-        )
+        # ✅ Get persona content with safe fallbacks for missing columns
+        try:
+            content = await conn.fetchrow(
+                """
+                SELECT 
+                    persona_code,
+                    persona_name,
+                    description,
+                    detailed_description,
+                    strength,
+                    strength_description,
+                    you_tend_to,
+                    you_naturally_bring,
+                    you_may_unintentionally_create,
+                    greatest_communication_advantage,
+                    biggest_communication_risk,
+                    blind_spot,
+                    blind_spot_description,
+                    tagline,
+                    communication_style,
+                    how_others_experience_you,
+                    growth_opportunities,
+                    communication_gap,
+                    recommended_actions
+                FROM persona_content
+                WHERE persona_code = $1
+                """,
+                persona['persona_code']
+            )
+        except Exception as e:
+            print(f"⚠️ Error fetching persona content: {e}")
+            content = None
 
         scores = persona['dimension_percentages']
         if isinstance(scores, str):
@@ -548,31 +557,56 @@ async def get_paid_persona_report(user_id: str):
         # Get competency write-ups
         competency_writeups = await get_competency_writeups(conn, scores)
 
-        # ✅ Build complete persona object with ALL fields
-        persona_data = {
-            "user_name": user['full_name'] if user else "Professional",
-            "user_email": user['email'] if user else "",
-            "code": persona['persona_code'],
-            "name": persona['persona_name'],
-            "description": persona['persona_description'],
-            "detailed_description": content['detailed_description'] if content else "",
-            "strength": persona['strength'],
-            "strength_description": persona['strength_description'],
-            "blind_spot": persona['blind_spot'],
-            "blind_spot_description": persona['blind_spot_description'],
-            "tagline": persona['tagline'],
-            # ✅ All persona_content fields
-            "you_tend_to": content['you_tend_to'] if content else "",
-            "you_naturally_bring": content['you_naturally_bring'] if content else "",
-            "you_may_unintentionally_create": content['you_may_unintentionally_create'] if content else "",
-            "greatest_communication_advantage": content['greatest_communication_advantage'] if content else "",
-            "biggest_communication_risk": content['biggest_communication_risk'] if content else "",
-            "communication_style": content['communication_style'] if content else "",
-            "how_others_experience_you": content['how_others_experience_you'] if content else "",
-            "growth_opportunities": content['growth_opportunities'] if content else "",
-            "communication_gap": content['communication_gap'] if content else "",
-            "recommended_actions": content['recommended_actions'] if content else ""
-        }
+        # ✅ Build persona data with safe .get() fallbacks
+        if content:
+            persona_data = {
+                "user_name": user['full_name'] if user else "Professional",
+                "user_email": user['email'] if user else "",
+                "code": persona['persona_code'],
+                "name": persona['persona_name'],
+                "description": persona['persona_description'] or content.get('description', ''),
+                "detailed_description": content.get('detailed_description', ''),
+                "strength": persona['strength'] or content.get('strength', ''),
+                "strength_description": persona['strength_description'] or content.get('strength_description', ''),
+                "blind_spot": persona['blind_spot'] or content.get('blind_spot', ''),
+                "blind_spot_description": content.get('blind_spot_description', ''),
+                "tagline": persona['tagline'] or content.get('tagline', ''),
+                "you_tend_to": content.get('you_tend_to', ''),
+                "you_naturally_bring": content.get('you_naturally_bring', ''),
+                "you_may_unintentionally_create": content.get('you_may_unintentionally_create', ''),
+                "greatest_communication_advantage": content.get('greatest_communication_advantage', ''),
+                "biggest_communication_risk": content.get('biggest_communication_risk', ''),
+                "communication_style": content.get('communication_style', ''),
+                "how_others_experience_you": content.get('how_others_experience_you', ''),
+                "growth_opportunities": content.get('growth_opportunities', ''),
+                "communication_gap": content.get('communication_gap', ''),
+                "recommended_actions": content.get('recommended_actions', '')
+            }
+        else:
+            # Fallback if no content found
+            persona_data = {
+                "user_name": user['full_name'] if user else "Professional",
+                "user_email": user['email'] if user else "",
+                "code": persona['persona_code'],
+                "name": persona['persona_name'],
+                "description": persona['persona_description'] or "",
+                "detailed_description": "",
+                "strength": persona['strength'] or "",
+                "strength_description": persona['strength_description'] or "",
+                "blind_spot": persona['blind_spot'] or "",
+                "blind_spot_description": "",
+                "tagline": persona['tagline'] or "",
+                "you_tend_to": "",
+                "you_naturally_bring": "",
+                "you_may_unintentionally_create": "",
+                "greatest_communication_advantage": "",
+                "biggest_communication_risk": "",
+                "communication_style": "",
+                "how_others_experience_you": "",
+                "growth_opportunities": "",
+                "communication_gap": "",
+                "recommended_actions": ""
+            }
 
         return {
             "success": True,
@@ -592,7 +626,6 @@ async def get_paid_persona_report(user_id: str):
     finally:
         if conn:
             await conn.close()
-
 
 
 # ============================================================

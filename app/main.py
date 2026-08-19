@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
@@ -6,7 +6,6 @@ import asyncpg
 from typing import Optional
 from pydantic import BaseModel
 import re
-import uuid
 from datetime import datetime
 
 load_dotenv()
@@ -17,7 +16,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for frontend
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,21 +32,16 @@ app.add_middleware(
 
 async def get_db():
     database_url = os.environ.get("DATABASE_URL")
-
     if not database_url:
         raise Exception("DATABASE_URL environment variable is not configured")
-
-    # Add port if missing
+    
     if database_url.startswith("postgresql://"):
         match = re.search(r'@([^:/]+)(?=/)', database_url)
         if match:
             host = match.group(1)
             if f"@{host}/" in database_url:
-                database_url = database_url.replace(
-                    f"@{host}/",
-                    f"@{host}:5432/"
-                )
-
+                database_url = database_url.replace(f"@{host}/", f"@{host}:5432/")
+    
     try:
         conn = await asyncpg.connect(dsn=database_url)
         print("✅ PostgreSQL connection successful")
@@ -117,17 +111,16 @@ async def health():
 @app.post("/api/leads")
 async def save_lead(lead: LeadCreate):
     """
-    Save a new lead to the leads table.
-    If email already exists, return the existing lead.
+    Save a new lead. Email is the unique identifier.
     """
     conn = None
     try:
-        # Validate required fields
+        # Validate
         if not lead.full_name or not lead.email:
-            raise HTTPException(
-                status_code=400,
-                detail="full_name and email are required"
-            )
+            return {
+                "success": False,
+                "message": "full_name and email are required"
+            }
 
         print("=" * 50)
         print("📥 LEAD RECEIVED")
@@ -141,7 +134,7 @@ async def save_lead(lead: LeadCreate):
         # Check if lead already exists
         existing_lead = await conn.fetchrow(
             """
-            SELECT lead_id, full_name, email, phone, created_at
+            SELECT full_name, email, phone, created_at
             FROM leads
             WHERE email = $1
             """,
@@ -157,11 +150,10 @@ async def save_lead(lead: LeadCreate):
             }
 
         # Insert new lead
-        new_lead = await conn.fetchrow(
+        await conn.execute(
             """
             INSERT INTO leads (full_name, email, phone, created_at, updated_at)
             VALUES ($1, $2, $3, NOW(), NOW())
-            RETURNING lead_id, full_name, email, phone, created_at
             """,
             lead.full_name,
             lead.email,
@@ -172,18 +164,15 @@ async def save_lead(lead: LeadCreate):
 
         return {
             "success": True,
-            "message": "Lead saved successfully",
-            "lead": dict(new_lead)
+            "message": "Lead saved successfully"
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"❌ Error saving lead: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        return {
+            "success": False,
+            "message": str(e)
+        }
     finally:
         if conn:
             await conn.close()
@@ -192,7 +181,7 @@ async def save_lead(lead: LeadCreate):
 @app.get("/api/leads")
 async def get_all_leads():
     """
-    Get all leads (admin use).
+    Get all leads.
     """
     conn = None
     try:
@@ -200,7 +189,7 @@ async def get_all_leads():
 
         leads = await conn.fetch(
             """
-            SELECT lead_id, full_name, email, phone, created_at
+            SELECT full_name, email, phone, created_at
             FROM leads
             ORDER BY created_at DESC
             """
@@ -214,10 +203,10 @@ async def get_all_leads():
 
     except Exception as e:
         print(f"❌ Error fetching leads: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        return {
+            "success": False,
+            "message": str(e)
+        }
     finally:
         if conn:
             await conn.close()
@@ -234,7 +223,7 @@ async def get_lead_by_email(email: str):
 
         lead = await conn.fetchrow(
             """
-            SELECT lead_id, full_name, email, phone, created_at
+            SELECT full_name, email, phone, created_at
             FROM leads
             WHERE email = $1
             """,
@@ -242,24 +231,22 @@ async def get_lead_by_email(email: str):
         )
 
         if not lead:
-            raise HTTPException(
-                status_code=404,
-                detail="Lead not found"
-            )
+            return {
+                "success": False,
+                "message": "Lead not found"
+            }
 
         return {
             "success": True,
             "lead": dict(lead)
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"❌ Error fetching lead: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        return {
+            "success": False,
+            "message": str(e)
+        }
     finally:
         if conn:
             await conn.close()

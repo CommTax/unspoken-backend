@@ -12,15 +12,13 @@ import random
 import string
 import hashlib
 import secrets
-from datetime import datetime, timedelta
-import razorpay
-import hmac
+from datetime import datetime
 
 load_dotenv()
 
 app = FastAPI(
     title="Unspoken Backend",
-    description="Lead Management Service",
+    description="Paid Persona Assessment",
     version="1.0.0"
 )
 
@@ -60,43 +58,6 @@ async def get_db():
 
 
 # ============================================================
-# MODELS
-# ============================================================
-
-class LeadCreate(BaseModel):
-    full_name: str
-    email: str
-    phone: Optional[str] = None
-
-
-class CheckoutRequest(BaseModel):
-    full_name: str
-    email: str
-    phone: str
-    type: str = 'persona'
-    plan_code: Optional[str] = None
-
-
-class PaymentVerifyRequest(BaseModel):
-    razorpay_payment_id: str
-    razorpay_order_id: str
-    razorpay_signature: str
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class PersonaAssessmentRequest(BaseModel):
-    user_id: str
-    responses: List[dict]  # [{"question_code": "Q1", "answer": 5}, ...]
-    type: str = 'paid'
-    user_details: Optional[dict] = None
-    test_mode: Optional[bool] = False
-
-
-# ============================================================
 # HELPERS
 # ============================================================
 
@@ -120,15 +81,35 @@ def verify_password(password: str, hashed: str):
 
 
 # ============================================================
-# SCORING ENGINE (ADD THIS SECTION)
+# MODELS
+# ============================================================
+
+class LeadCreate(BaseModel):
+    full_name: str
+    email: str
+    phone: Optional[str] = None
+
+
+class UserCreate(BaseModel):
+    full_name: str
+    email: str
+    phone: Optional[str] = None
+
+
+class PersonaAssessmentRequest(BaseModel):
+    user_details: UserCreate
+    responses: List[dict]  # [{"question_code": "Q1", "answer": 5}, ...]
+    type: str = 'paid'
+
+
+# ============================================================
+# SCORING ENGINE
 # ============================================================
 
 def calculate_competency_scores(responses):
     """
-    ✅ Backend calculates scores from 30 questions
-    ❌ NOT in database
+    Calculate scores for 5 competencies from 30 questions.
     """
-    # Question to category mapping
     category_mapping = {
         'structure': ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6'],
         'thinking': ['Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12'],
@@ -137,7 +118,6 @@ def calculate_competency_scores(responses):
         'connection': ['Q25', 'Q26', 'Q27', 'Q28', 'Q29', 'Q30']
     }
     
-    # Initialize scores
     competency_scores = {
         'structure': 0,
         'thinking': 0,
@@ -146,10 +126,9 @@ def calculate_competency_scores(responses):
         'connection': 0
     }
     
-    # Process responses
     for r in responses:
         question_code = r.get('question_code')
-        answer = r.get('answer')  # 1-5
+        answer = r.get('answer')
         
         try:
             score = int(answer)
@@ -161,7 +140,6 @@ def calculate_competency_scores(responses):
                 competency_scores[category] += score
                 break
     
-    # Calculate averages (0-100 scale)
     for category in competency_scores:
         competency_scores[category] = round((competency_scores[category] / 6) * 20, 2)
     
@@ -169,7 +147,6 @@ def calculate_competency_scores(responses):
 
 
 def get_score_range(score):
-    """Determine score range for lookup"""
     if score >= 90:
         return '90-100'
     elif score >= 75:
@@ -183,11 +160,6 @@ def get_score_range(score):
 
 
 def determine_persona(competency_scores):
-    """
-    ✅ Backend determines persona from scores
-    ❌ NOT in database
-    """
-    # Helper to check levels
     def get_level(score):
         if score >= 80: return 'high'
         if score >= 60: return 'mid'
@@ -195,34 +167,21 @@ def determine_persona(competency_scores):
     
     levels = {cat: get_level(score) for cat, score in competency_scores.items()}
     
-    # Pattern matching logic
-    # Check for TRANSLATOR: All dimensions High
     if all(level == 'high' for level in levels.values()):
         return 'TRANSLATOR'
-    
-    # Check for AMPLIFIER: Impact + Expression stand out
-    if levels['impact'] == 'high' and levels['expression'] == 'high':
+    elif levels['impact'] == 'high' and levels['expression'] == 'high':
         return 'AMPLIFIER'
-    
-    # Check for ARTICULATOR: Structure + Expression stand out
-    if levels['structure'] == 'high' and levels['expression'] == 'high':
+    elif levels['structure'] == 'high' and levels['expression'] == 'high':
         return 'ARTICULATOR'
-    
-    # Check for INTERPRETER: Thinking + Connection stand out
-    if levels['thinking'] == 'high' and levels['connection'] == 'high':
+    elif levels['thinking'] == 'high' and levels['connection'] == 'high':
         return 'INTERPRETER'
-    
-    # Check for FILTER: Thinking + Structure strong, Impact lower
-    if levels['thinking'] == 'high' and levels['structure'] == 'high' and levels['impact'] == 'low':
+    elif levels['thinking'] == 'high' and levels['structure'] == 'high' and levels['impact'] == 'low':
         return 'FILTER'
-    
-    # Check for EMERGING: Low Impact + moderate others
-    if levels['impact'] == 'low':
+    elif levels['impact'] == 'low':
         other_levels = [levels[cat] for cat in ['structure', 'thinking', 'expression', 'connection']]
         if any(level == 'high' for level in other_levels) or all(level != 'low' for level in other_levels):
             return 'EMERGING'
     
-    # Check for MISALIGNED: Connection significantly lower than others
     connection_score = competency_scores['connection']
     other_scores = [competency_scores[cat] for cat in ['structure', 'thinking', 'impact', 'expression']]
     avg_other = sum(other_scores) / len(other_scores) if other_scores else 0
@@ -230,25 +189,15 @@ def determine_persona(competency_scores):
     if connection_score < avg_other - 15:
         return 'MISALIGNED'
     
-    # Default: Articulator
     return 'ARTICULATOR'
 
 
-# ============================================================
-# COMPETENCY LOOKUP (ADD THIS SECTION)
-# ============================================================
-
 async def get_competency_writeups(conn, competency_scores):
-    """
-    ✅ Backend looks up write-ups from database
-    ✅ Database stores the content only
-    """
     writeups = {}
     
     for competency, score in competency_scores.items():
         score_range = get_score_range(score)
         
-        # Database only stores the content, not the logic
         row = await conn.fetchrow(
             """
             SELECT 
@@ -280,7 +229,6 @@ async def get_competency_writeups(conn, competency_scores):
                 'highest_roi_improvement': row['highest_roi_improvement']
             }
         else:
-            # Fallback if no matching record found
             writeups[competency] = {
                 'score': score,
                 'score_range': score_range,
@@ -297,113 +245,145 @@ async def get_competency_writeups(conn, competency_scores):
 
 
 # ============================================================
-# PAID PERSONA ASSESSMENT ENDPOINT (ADD THIS SECTION)
+# LEADS ENDPOINT (Keep existing)
+# ============================================================
+
+@app.post("/api/leads")
+async def save_lead(lead: LeadCreate):
+    conn = None
+    try:
+        if not lead.full_name or not lead.email:
+            return {"success": False, "message": "full_name and email are required"}
+
+        conn = await get_db()
+
+        existing_lead = await conn.fetchrow(
+            "SELECT full_name, email, phone, created_at FROM leads WHERE email = $1",
+            lead.email
+        )
+
+        if existing_lead:
+            return {"success": True, "message": "Lead already exists", "lead": dict(existing_lead)}
+
+        await conn.execute(
+            """
+            INSERT INTO leads (full_name, email, phone, created_at, updated_at)
+            VALUES ($1, $2, $3, NOW(), NOW())
+            """,
+            lead.full_name, lead.email, lead.phone
+        )
+
+        return {"success": True, "message": "Lead saved successfully"}
+
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if conn:
+            await conn.close()
+
+
+@app.get("/api/leads")
+async def get_all_leads():
+    conn = None
+    try:
+        conn = await get_db()
+        leads = await conn.fetch(
+            "SELECT full_name, email, phone, created_at FROM leads ORDER BY created_at DESC"
+        )
+        return {"success": True, "leads": [dict(lead) for lead in leads], "count": len(leads)}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if conn:
+            await conn.close()
+
+
+@app.get("/api/leads/{email}")
+async def get_lead_by_email(email: str):
+    conn = None
+    try:
+        conn = await get_db()
+        lead = await conn.fetchrow(
+            "SELECT full_name, email, phone, created_at FROM leads WHERE email = $1",
+            email
+        )
+        if not lead:
+            return {"success": False, "message": "Lead not found"}
+        return {"success": True, "lead": dict(lead)}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if conn:
+            await conn.close()
+
+
+# ============================================================
+# PAID PERSONA ASSESSMENT ENDPOINT (No Payment)
 # ============================================================
 
 @app.post("/api/persona/paid-assess")
 async def paid_persona_assessment(data: PersonaAssessmentRequest):
-    """
-    Submit paid persona assessment responses.
-    Scoring is done entirely on the backend.
-    """
     conn = None
     try:
         print("=" * 50)
         print("📝 PAID PERSONA ASSESSMENT")
-        print(f"User: {data.user_id}")
+        print(f"Name  : {data.user_details.full_name}")
+        print(f"Email : {data.user_details.email}")
+        print(f"Phone : {data.user_details.phone}")
         print(f"Responses: {len(data.responses)}")
         print("=" * 50)
 
         conn = await get_db()
 
-        # --- 1. Handle User ---
-        user_id = data.user_id
-        
-        if data.test_mode and data.user_details:
-            # Test mode - create or get user
-            user = await conn.fetchrow(
-                "SELECT user_id FROM users WHERE email = $1",
-                data.user_details.get('email')
-            )
-            if not user:
-                user_id = await conn.fetchval(
-                    """
-                    INSERT INTO users (full_name, email, phone, created_at, has_paid_persona)
-                    VALUES ($1, $2, $3, NOW(), TRUE)
-                    RETURNING user_id
-                    """,
-                    data.user_details.get('full_name', 'Test User'),
-                    data.user_details.get('email', 'test@example.com'),
-                    data.user_details.get('phone', '9999999999')
-                )
-                print(f"✅ Test user created: {user_id}")
-            else:
-                user_id = user['user_id']
-                await conn.execute(
-                    "UPDATE users SET has_paid_persona = TRUE WHERE user_id = $1",
-                    user_id
-                )
-                print(f"✅ Existing user updated: {user_id}")
-        else:
-            # Verify user exists
-            user = await conn.fetchrow(
-                "SELECT user_id FROM users WHERE user_id = $1",
-                data.user_id
-            )
-            if not user:
-                return {"success": False, "message": "User not found"}
-            user_id = data.user_id
-
-        # --- 2. Calculate Competency Scores ---
-        competency_scores = calculate_competency_scores(data.responses)
-        print(f"📊 Competency Scores: {competency_scores}")
-
-        # --- 3. Determine Persona ---
-        persona_code = determine_persona(competency_scores)
-        print(f"🧠 Persona: {persona_code}")
-
-        # --- 4. Get Persona Content ---
-        persona_content = await conn.fetchrow(
-            """
-            SELECT 
-                persona_code,
-                persona_name,
-                description,
-                detailed_description,
-                strength,
-                strength_description,
-                you_tend_to,
-                you_naturally_bring,
-                you_may_unintentionally_create,
-                greatest_communication_advantage,
-                biggest_communication_risk,
-                blind_spot,
-                blind_spot_description,
-                tagline,
-                communication_style,
-                how_others_experience_you,
-                growth_opportunities,
-                communication_gap,
-                recommended_actions
-            FROM persona_content
-            WHERE persona_code = $1
-            """,
-            persona_code
+        # --- 1. Create or Get User ---
+        user = await conn.fetchrow(
+            "SELECT user_id FROM users WHERE email = $1",
+            data.user_details.email
         )
 
+        if not user:
+            password = generate_password()
+            password_hash = hash_password(password)
+            
+            user_id = await conn.fetchval(
+                """
+                INSERT INTO users (full_name, email, phone, password_hash, created_at, has_paid_persona)
+                VALUES ($1, $2, $3, $4, NOW(), TRUE)
+                RETURNING user_id
+                """,
+                data.user_details.full_name,
+                data.user_details.email,
+                data.user_details.phone,
+                password_hash
+            )
+            print(f"✅ New user created: {user_id}")
+            print(f"🔑 Password: {password}")
+        else:
+            user_id = user['user_id']
+            await conn.execute(
+                "UPDATE users SET has_paid_persona = TRUE WHERE user_id = $1",
+                user_id
+            )
+            print(f"✅ Existing user updated: {user_id}")
+
+        # --- 2. Calculate Scores ---
+        competency_scores = calculate_competency_scores(data.responses)
+        persona_code = determine_persona(competency_scores)
+
+        # --- 3. Get Persona Content ---
+        persona_content = await conn.fetchrow(
+            "SELECT * FROM persona_content WHERE persona_code = $1",
+            persona_code
+        )
         if not persona_content:
-            # Fallback to Articulator
             persona_content = await conn.fetchrow(
                 "SELECT * FROM persona_content WHERE persona_code = 'ARTICULATOR'"
             )
 
-        if not persona_content:
-            return {"success": False, "message": "Persona content not found"}
-
-        # --- 5. Get Competency Write-ups ---
+        # --- 4. Get Competency Write-ups ---
         competency_writeups = await get_competency_writeups(conn, competency_scores)
 
-        # --- 6. Store Responses ---
+        # --- 5. Store Responses ---
         for r in data.responses:
             await conn.execute(
                 """
@@ -415,24 +395,14 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
                 r.get('answer')
             )
 
-        # --- 7. Store Persona Result ---
+        # --- 6. Store Persona Result ---
         await conn.execute(
             """
             INSERT INTO paid_personas (
-                user_id,
-                persona_code,
-                persona_name,
-                persona_description,
-                strength,
-                strength_description,
-                blind_spot,
-                tagline,
-                structure_score,
-                thinking_score,
-                impact_score,
-                expression_score,
-                connection_score,
-                dimension_percentages
+                user_id, persona_code, persona_name, persona_description,
+                strength, strength_description, blind_spot, tagline,
+                structure_score, thinking_score, impact_score, 
+                expression_score, connection_score, dimension_percentages
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             """,
@@ -452,13 +422,7 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
             json.dumps(competency_scores)
         )
 
-        # --- 8. Mark User as Paid ---
-        await conn.execute(
-            "UPDATE users SET has_paid_persona = TRUE WHERE user_id = $1",
-            user_id
-        )
-
-        # --- 9. Build Complete Report ---
+        # --- 7. Build Report ---
         report = {
             "persona": {
                 "code": persona_content['persona_code'],
@@ -477,9 +441,7 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
                 "tagline": persona_content['tagline'],
                 "communication_style": persona_content['communication_style'],
                 "how_others_experience_you": persona_content['how_others_experience_you'],
-                "growth_opportunities": persona_content['growth_opportunities'],
-                "communication_gap": persona_content['communication_gap'],
-                "recommended_actions": persona_content['recommended_actions']
+                "growth_opportunities": persona_content['growth_opportunities']
             },
             "competencies": competency_writeups,
             "scores": competency_scores
@@ -487,7 +449,13 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
 
         return {
             "success": True,
-            "report": report
+            "report": report,
+            "user": {
+                "user_id": str(user_id),
+                "full_name": data.user_details.full_name,
+                "email": data.user_details.email,
+                "phone": data.user_details.phone
+            }
         }
 
     except Exception as e:
@@ -506,30 +474,17 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
 
 @app.get("/api/persona/paid-report/{user_id}")
 async def get_paid_persona_report(user_id: str):
-    """
-    Get the paid persona report for a user.
-    """
     conn = None
     try:
         conn = await get_db()
 
-        # Get the latest persona result
         persona = await conn.fetchrow(
             """
             SELECT 
-                persona_code,
-                persona_name,
-                persona_description,
-                strength,
-                strength_description,
-                blind_spot,
-                tagline,
-                structure_score,
-                thinking_score,
-                impact_score,
-                expression_score,
-                connection_score,
-                dimension_percentages,
+                persona_code, persona_name, persona_description,
+                strength, strength_description, blind_spot, tagline,
+                structure_score, thinking_score, impact_score, 
+                expression_score, connection_score, dimension_percentages,
                 created_at
             FROM paid_personas
             WHERE user_id = $1
@@ -542,21 +497,6 @@ async def get_paid_persona_report(user_id: str):
         if not persona:
             return {"success": False, "message": "No persona found for this user"}
 
-        # Get persona content for additional details
-        content = await conn.fetchrow(
-            """
-            SELECT 
-                communication_style,
-                how_others_experience_you,
-                growth_opportunities,
-                report_sections
-            FROM persona_content
-            WHERE persona_code = $1
-            """,
-            persona['persona_code']
-        )
-
-        # Get competency scores
         scores = persona['dimension_percentages']
         if isinstance(scores, str):
             scores = json.loads(scores)
@@ -573,10 +513,7 @@ async def get_paid_persona_report(user_id: str):
                     "strength": persona['strength'],
                     "strength_description": persona['strength_description'],
                     "blind_spot": persona['blind_spot'],
-                    "tagline": persona['tagline'],
-                    "communication_style": content['communication_style'] if content else "",
-                    "how_others_experience_you": content['how_others_experience_you'] if content else "",
-                    "growth_opportunities": content['growth_opportunities'] if content else ""
+                    "tagline": persona['tagline']
                 },
                 "competencies": competency_writeups,
                 "scores": scores,
@@ -604,8 +541,6 @@ async def root():
         "endpoints": [
             "POST /api/leads - Save a new lead",
             "GET /api/leads - Get all leads",
-            "GET /api/leads/{email} - Get lead by email",
-            "GET /api/health - Health check",
             "POST /api/persona/paid-assess - Paid Persona Assessment",
             "GET /api/persona/paid-report/{user_id} - Get Paid Persona Report"
         ]
@@ -628,155 +563,7 @@ async def health():
             "timestamp": result["current_time"]
         }
     except Exception as e:
-        return {
-            "status": "API running but database connection failed",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            await conn.close()
-
-
-# ============================================================
-# LEADS ENDPOINTS
-# ============================================================
-
-@app.post("/api/leads")
-async def save_lead(lead: LeadCreate):
-    """
-    Save a new lead. Email is the unique identifier.
-    """
-    conn = None
-    try:
-        if not lead.full_name or not lead.email:
-            return {
-                "success": False,
-                "message": "full_name and email are required"
-            }
-
-        print("=" * 50)
-        print("📥 LEAD RECEIVED")
-        print(f"Name  : {lead.full_name}")
-        print(f"Email : {lead.email}")
-        print(f"Phone : {lead.phone}")
-        print("=" * 50)
-
-        conn = await get_db()
-
-        existing_lead = await conn.fetchrow(
-            """
-            SELECT full_name, email, phone, created_at
-            FROM leads
-            WHERE email = $1
-            """,
-            lead.email
-        )
-
-        if existing_lead:
-            print("✅ Lead already exists:", lead.email)
-            return {
-                "success": True,
-                "message": "Lead already exists",
-                "lead": dict(existing_lead)
-            }
-
-        await conn.execute(
-            """
-            INSERT INTO leads (full_name, email, phone, created_at, updated_at)
-            VALUES ($1, $2, $3, NOW(), NOW())
-            """,
-            lead.full_name,
-            lead.email,
-            lead.phone
-        )
-
-        print("✅ Lead saved successfully:", lead.email)
-
-        return {
-            "success": True,
-            "message": "Lead saved successfully"
-        }
-
-    except Exception as e:
-        print(f"❌ Error saving lead: {e}")
-        return {
-            "success": False,
-            "message": str(e)
-        }
-    finally:
-        if conn:
-            await conn.close()
-
-
-@app.get("/api/leads")
-async def get_all_leads():
-    """
-    Get all leads.
-    """
-    conn = None
-    try:
-        conn = await get_db()
-
-        leads = await conn.fetch(
-            """
-            SELECT full_name, email, phone, created_at
-            FROM leads
-            ORDER BY created_at DESC
-            """
-        )
-
-        return {
-            "success": True,
-            "leads": [dict(lead) for lead in leads],
-            "count": len(leads)
-        }
-
-    except Exception as e:
-        print(f"❌ Error fetching leads: {e}")
-        return {
-            "success": False,
-            "message": str(e)
-        }
-    finally:
-        if conn:
-            await conn.close()
-
-
-@app.get("/api/leads/{email}")
-async def get_lead_by_email(email: str):
-    """
-    Get a lead by email address.
-    """
-    conn = None
-    try:
-        conn = await get_db()
-
-        lead = await conn.fetchrow(
-            """
-            SELECT full_name, email, phone, created_at
-            FROM leads
-            WHERE email = $1
-            """,
-            email
-        )
-
-        if not lead:
-            return {
-                "success": False,
-                "message": "Lead not found"
-            }
-
-        return {
-            "success": True,
-            "lead": dict(lead)
-        }
-
-    except Exception as e:
-        print(f"❌ Error fetching lead: {e}")
-        return {
-            "success": False,
-            "message": str(e)
-        }
+        return {"status": "API running but database connection failed", "error": str(e)}
     finally:
         if conn:
             await conn.close()

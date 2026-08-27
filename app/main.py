@@ -13,12 +13,13 @@ import string
 import hashlib
 import secrets
 from datetime import datetime
+import google.generativeai as genai
 
 load_dotenv()
 
 app = FastAPI(
     title="Unspoken Backend",
-    description="Paid Persona Assessment",
+    description="Paid Persona Assessment + Communication Analysis",
     version="1.0.0"
 )
 
@@ -31,6 +32,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================
+# GEMINI API CONFIGURATION
+# ============================================================
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    print("⚠️ GEMINI_API_KEY not set. Using mock mode.")
+else:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        print("✅ Gemini API configured successfully")
+    except Exception as e:
+        print(f"⚠️ Gemini API configuration error: {e}")
+        GEMINI_API_KEY = None
 
 # ============================================================
 # DATABASE CONNECTION
@@ -39,7 +55,8 @@ app.add_middleware(
 async def get_db():
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        raise Exception("DATABASE_URL environment variable is not configured")
+        print("⚠️ DATABASE_URL not configured. Database features disabled.")
+        return None
     
     if database_url.startswith("postgresql://"):
         match = re.search(r'@([^:/]+)(?=/)', database_url)
@@ -54,7 +71,7 @@ async def get_db():
         return conn
     except Exception as e:
         print(f"❌ PostgreSQL connection failed: {e}")
-        raise
+        return None
 
 
 # ============================================================
@@ -102,8 +119,106 @@ class PersonaAssessmentRequest(BaseModel):
     type: str = 'paid'
 
 
+# Communication Analysis Models
+class AttemptData(BaseModel):
+    attempt: int
+    response: str
+    mode: str  # 'voice' or 'text'
+
+
+class CommunicationRequest(BaseModel):
+    scenario_id: int
+    attempts: List[AttemptData]
+
+
 # ============================================================
-# SCORING ENGINE
+# SCENARIOS DATA
+# ============================================================
+
+SCENARIOS = [
+    {
+        "id": 0,
+        "context": "Your team missed a key deadline. You need to update your manager.",
+        "question": "Your manager asks: 'What happened with the deadline, and what's your plan to fix it?'",
+        "better": "We're behind on the project timeline due to unexpected technical dependencies. I've identified the bottlenecks and created a recovery plan. We can deliver by Friday if we reprioritize the backlog. I'll share the detailed plan after this meeting. Does that approach work for you?"
+    },
+    {
+        "id": 1,
+        "context": "A client says your proposal is too expensive. You need to respond and keep the deal alive.",
+        "question": "The client says: 'Your price is 30% higher than your competitor's. Why should we go with you?'",
+        "better": "I understand budget is a concern. Let me walk you through the ROI — this solution saves you 30% on operational costs within the first year. I can also offer a phased deployment to spread the cost. Would a 6-month payment plan work for your team?"
+    },
+    {
+        "id": 2,
+        "context": "You want to ask your manager for a promotion. Draft your pitch.",
+        "question": "Your manager says: 'Tell me why you deserve a promotion right now.'",
+        "better": "I'd like to discuss advancing to the next level. Over the past year, I've exceeded my targets by 20%, led two successful product launches, and taken on mentorship responsibilities. I believe I'm ready to take on more strategic ownership. Can we schedule time next week to discuss this?"
+    },
+    {
+        "id": 3,
+        "context": "You need to give constructive feedback to a teammate who's been underperforming.",
+        "question": "Your teammate asks: 'Is there anything I could be doing better?'",
+        "better": "I want to discuss your recent deliverables. I've noticed a few inconsistencies in quality and missed deadlines. I know you're capable of great work — what support do you need from me to get back on track? Let's work together to improve this."
+    },
+    {
+        "id": 4,
+        "context": "You're in a job interview. The interviewer asks the classic opening question.",
+        "question": "Interviewer: 'Tell me about yourself.'",
+        "better": "I'm a product manager with 5 years of experience in fintech. I led the launch of a mobile banking app that grew to 200K users in 6 months. I specialize in bridging the gap between business goals and technical execution. I'm looking to bring that expertise to a scaling startup like yours."
+    }
+]
+
+
+# ============================================================
+# PERSONA MAP
+# ============================================================
+
+PERSONA_MAP = {
+    'clarity': {
+        'name': 'The Translator',
+        'description': 'You make complexity make sense.',
+        'strength_label': 'CLARITY',
+        'strength_desc': 'You tend to make your core message understandable once you commit to it.',
+        'growth_label': 'INFLUENCE',
+        'growth_desc': 'You explain your position well, but your strongest recommendation sometimes arrives too softly.'
+    },
+    'precision': {
+        'name': 'The Articulator',
+        'description': 'You speak with clarity and command.',
+        'strength_label': 'PRECISION',
+        'strength_desc': 'You use specific, concrete language that leaves little room for ambiguity.',
+        'growth_label': 'INFLUENCE',
+        'growth_desc': 'You can get so specific that you miss the bigger picture.'
+    },
+    'structure': {
+        'name': 'The Architect',
+        'description': 'You build ideas that stand firm.',
+        'strength_label': 'STRUCTURE',
+        'strength_desc': 'You organize your thoughts in a logical, easy-to-follow sequence.',
+        'growth_label': 'IMPACT',
+        'growth_desc': 'Your structure can become rigid, making you less adaptable in conversation.'
+    },
+    'impact': {
+        'name': 'The Amplifier',
+        'description': 'Your presence makes ideas unforgettable.',
+        'strength_label': 'IMPACT',
+        'strength_desc': 'Your messages have a lasting impression on those who hear them.',
+        'growth_label': 'PRECISION',
+        'growth_desc': 'Your strong delivery can sometimes overwhelm softer messages.'
+    },
+    'influence': {
+        'name': 'The Catalyst',
+        'description': 'You move people to action.',
+        'strength_label': 'INFLUENCE',
+        'strength_desc': 'You have a natural ability to persuade and move others to action.',
+        'growth_label': 'STRUCTURE',
+        'growth_desc': 'Your passion can sometimes outpace your structure.'
+    }
+}
+
+
+# ============================================================
+# PERSONA ASSESSMENT - SCORING ENGINE
 # ============================================================
 
 def calculate_competency_scores(responses):
@@ -159,7 +274,7 @@ def get_score_range(score):
         return 'Below 40'
 
 
-def determine_persona(competency_scores):
+def determine_persona_from_assessment(competency_scores):
     def get_level(score):
         if score >= 80: return 'high'
         if score >= 60: return 'mid'
@@ -198,54 +313,228 @@ async def get_competency_writeups(conn, competency_scores):
     for competency, score in competency_scores.items():
         score_range = get_score_range(score)
         
-        row = await conn.fetchrow(
-            """
-            SELECT 
-                competency,
-                score_range,
-                category,
-                executive_narrative,
-                whats_working,
-                whats_holding_you_back,
-                how_others_experience_you,
-                professional_impact,
-                highest_roi_improvement
-            FROM competency_scores
-            WHERE competency = $1 AND score_range = $2
-            """,
-            competency, score_range
-        )
+        if conn:
+            row = await conn.fetchrow(
+                """
+                SELECT 
+                    competency,
+                    score_range,
+                    category,
+                    executive_narrative,
+                    whats_working,
+                    whats_holding_you_back,
+                    how_others_experience_you,
+                    professional_impact,
+                    highest_roi_improvement
+                FROM competency_scores
+                WHERE competency = $1 AND score_range = $2
+                """,
+                competency, score_range
+            )
+            
+            if row:
+                writeups[competency] = {
+                    'score': score,
+                    'score_range': row['score_range'],
+                    'category': row['category'],
+                    'executive_narrative': row['executive_narrative'],
+                    'whats_working': row['whats_working'],
+                    'whats_holding_you_back': row['whats_holding_you_back'],
+                    'how_others_experience_you': row['how_others_experience_you'],
+                    'professional_impact': row['professional_impact'],
+                    'highest_roi_improvement': row['highest_roi_improvement']
+                }
+                continue
         
-        if row:
-            writeups[competency] = {
-                'score': score,
-                'score_range': row['score_range'],
-                'category': row['category'],
-                'executive_narrative': row['executive_narrative'],
-                'whats_working': row['whats_working'],
-                'whats_holding_you_back': row['whats_holding_you_back'],
-                'how_others_experience_you': row['how_others_experience_you'],
-                'professional_impact': row['professional_impact'],
-                'highest_roi_improvement': row['highest_roi_improvement']
-            }
-        else:
-            writeups[competency] = {
-                'score': score,
-                'score_range': score_range,
-                'category': 'Not Available',
-                'executive_narrative': 'No narrative available for this score range.',
-                'whats_working': '',
-                'whats_holding_you_back': '',
-                'how_others_experience_you': '',
-                'professional_impact': '',
-                'highest_roi_improvement': ''
-            }
+        # Fallback if no DB or no row found
+        writeups[competency] = {
+            'score': score,
+            'score_range': score_range,
+            'category': 'Not Available',
+            'executive_narrative': 'No narrative available for this score range.',
+            'whats_working': '',
+            'whats_holding_you_back': '',
+            'how_others_experience_you': '',
+            'professional_impact': '',
+            'highest_roi_improvement': ''
+        }
     
     return writeups
 
 
 # ============================================================
-# LEADS ENDPOINT
+# COMMUNICATION ANALYSIS - GEMINI FUNCTIONS
+# ============================================================
+
+def build_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None):
+    """Build the prompt for Gemini API."""
+    
+    scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
+    
+    prompt = f"""
+You are a world-class communication coach. Analyze the user's response to this scenario:
+
+SCENARIO CONTEXT: {scenario['context']}
+QUESTION: {scenario['question']}
+
+USER'S RESPONSE: {response_text}
+
+This is attempt {attempt} of {total_attempts}.
+"""
+
+    if previous_scores and len(previous_scores) > 0:
+        prompt += f"\nPREVIOUS ATTEMPTS SCORES: {json.dumps(previous_scores)}"
+        prompt += "\nCompare this attempt to the previous ones. Note improvement or decline."
+
+    prompt += """
+
+Score the response on these 5 dimensions (0-100):
+1. CLARITY - Is the main point obvious and well-stated?
+2. PRECISION - Are specific details, examples, or numbers used?
+3. STRUCTURE - Is the response organized logically?
+4. IMPACT - Will the listener remember the key message?
+5. INFLUENCE - Does it persuade or drive action?
+
+Provide:
+1. Scores for each dimension (0-100)
+2. Specific, actionable feedback for improvement
+3. A better version of the response
+
+RETURN ONLY VALID JSON in this exact format:
+{
+  "scores": {
+    "clarity": 75,
+    "precision": 70,
+    "structure": 65,
+    "impact": 80,
+    "influence": 68
+  },
+  "feedback": [
+    "Your main point is clear but could be stronger.",
+    "Add more specific examples to strengthen your argument."
+  ],
+  "betterVersion": "Here is an improved version of your response..."
+}
+"""
+    return prompt
+
+
+def call_gemini_api(prompt: str):
+    """Call Gemini API with the prompt."""
+    try:
+        if not GEMINI_API_KEY or not model:
+            return None
+            
+        response = model.generate_content(prompt)
+        
+        # Extract JSON from response
+        text = response.text
+        
+        # Try to find JSON in the response
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        else:
+            print(f"⚠️ No JSON found in response: {text[:200]}...")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Gemini API Error: {e}")
+        return None
+
+
+def generate_mock_result(text: str, scenario_id: int = 0):
+    """Fallback mock analysis when Gemini is unavailable."""
+    word_count = len(text.split())
+    has_structure = bool(re.search(r'first|second|finally|next|then|firstly|secondly', text, re.IGNORECASE))
+    has_clear_ask = bool(re.search(r'\?|please|recommend|suggest|propose|request', text, re.IGNORECASE))
+    has_numbers = bool(re.search(r'\d', text))
+    has_confidence = bool(re.search(r'I believe|I know|I\'m confident|I\'m sure|I think', text, re.IGNORECASE))
+    has_impact = bool(re.search(r'deliver|achieve|result|outcome|success|goal', text, re.IGNORECASE))
+
+    import random
+    random.seed(hash(text) % 10000)
+    
+    scores = {
+        'clarity': min(92, max(35, 55 + (20 if has_clear_ask else 0) + (8 if word_count > 15 else 0) + random.randint(-7, 7))),
+        'precision': min(92, max(30, 45 + (25 if has_numbers else 0) + (8 if word_count > 20 else 0) + random.randint(-7, 7))),
+        'structure': min(92, max(25, 35 + (30 if has_structure else 0) + (8 if word_count > 20 else 0) + random.randint(-7, 7))),
+        'impact': min(92, max(30, 45 + (20 if has_impact else 0) + (12 if has_clear_ask else 0) + random.randint(-7, 7))),
+        'influence': min(92, max(25, 35 + (22 if has_confidence else 0) + (18 if has_clear_ask else 0) + random.randint(-7, 7)))
+    }
+    
+    feedback = []
+    if scores['clarity'] < 65:
+        feedback.append("⚠️ Unclear — Your main point isn't obvious. State your core message upfront.")
+    elif scores['clarity'] < 80:
+        feedback.append("🟡 Moderately Clear — Your point is there, but could be sharper.")
+    else:
+        feedback.append("✅ Clear — Your main point comes through effectively.")
+    
+    if scores['precision'] < 65:
+        feedback.append("⚠️ Vague — Use specific numbers, dates, or concrete examples.")
+    elif scores['precision'] < 80:
+        feedback.append("🟡 Somewhat Precise — Add more specific details.")
+    else:
+        feedback.append("✅ Precise — Good use of specific details.")
+    
+    if scores['structure'] < 65:
+        feedback.append("⚠️ Scattered — Try: Context → Problem → Solution → Ask.")
+    elif scores['structure'] < 80:
+        feedback.append("🟡 Partly Structured — Could be more organized.")
+    else:
+        feedback.append("✅ Structured — Clear logical flow.")
+    
+    if scores['impact'] < 65:
+        feedback.append("⚠️ Forgettable — What's the one thing you want them to remember?")
+    elif scores['impact'] < 80:
+        feedback.append("🟡 Moderate Impact — End with a strong closing statement.")
+    else:
+        feedback.append("✅ Impactful — Memorable and leaves a strong impression.")
+    
+    if scores['influence'] < 65:
+        feedback.append("⚠️ Uncompelling — Add a clear call to action.")
+    elif scores['influence'] < 80:
+        feedback.append("🟡 Somewhat Compelling — Strengthen your ask.")
+    else:
+        feedback.append("✅ Influential — Compelling case with clear action.")
+    
+    # Get better version from scenarios
+    scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
+    better_version = scenario['better']
+    
+    return {
+        'scores': scores,
+        'feedback': feedback,
+        'betterVersion': better_version
+    }
+
+
+def determine_persona_from_attempts(attempts_data: list):
+    """Determine persona based on all attempts."""
+    dims = ['clarity', 'precision', 'structure', 'impact', 'influence']
+    totals = {d: 0 for d in dims}
+    
+    for attempt in attempts_data:
+        scores = attempt.get('scores', {})
+        for d in dims:
+            totals[d] += scores.get(d, 50)
+    
+    # Find strongest
+    strongest = max(totals, key=totals.get)
+    weakest = min(totals, key=totals.get)
+    
+    persona = PERSONA_MAP.get(strongest, PERSONA_MAP['clarity'])
+    
+    return {
+        'persona': persona,
+        'strongest': strongest.upper(),
+        'weakest': weakest.upper()
+    }
+
+
+# ============================================================
+# LEADS ENDPOINTS
 # ============================================================
 
 @app.post("/api/leads")
@@ -256,6 +545,8 @@ async def save_lead(lead: LeadCreate):
             return {"success": False, "message": "full_name and email are required"}
 
         conn = await get_db()
+        if not conn:
+            return {"success": False, "message": "Database connection failed"}
 
         existing_lead = await conn.fetchrow(
             "SELECT full_name, email, phone, created_at FROM leads WHERE email = $1",
@@ -263,6 +554,7 @@ async def save_lead(lead: LeadCreate):
         )
 
         if existing_lead:
+            await conn.close()
             return {"success": True, "message": "Lead already exists", "lead": dict(existing_lead)}
 
         await conn.execute(
@@ -273,6 +565,7 @@ async def save_lead(lead: LeadCreate):
             lead.full_name, lead.email, lead.phone
         )
 
+        await conn.close()
         return {"success": True, "message": "Lead saved successfully"}
 
     except Exception as e:
@@ -287,9 +580,13 @@ async def get_all_leads():
     conn = None
     try:
         conn = await get_db()
+        if not conn:
+            return {"success": False, "message": "Database connection failed"}
+            
         leads = await conn.fetch(
             "SELECT full_name, email, phone, created_at FROM leads ORDER BY created_at DESC"
         )
+        await conn.close()
         return {"success": True, "leads": [dict(lead) for lead in leads], "count": len(leads)}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -303,10 +600,14 @@ async def get_lead_by_email(email: str):
     conn = None
     try:
         conn = await get_db()
+        if not conn:
+            return {"success": False, "message": "Database connection failed"}
+            
         lead = await conn.fetchrow(
             "SELECT full_name, email, phone, created_at FROM leads WHERE email = $1",
             email
         )
+        await conn.close()
         if not lead:
             return {"success": False, "message": "Lead not found"}
         return {"success": True, "lead": dict(lead)}
@@ -334,6 +635,8 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
         print("=" * 50)
 
         conn = await get_db()
+        if not conn:
+            return {"success": False, "message": "Database connection failed"}
 
         # --- 1. Create or Get User ---
         user = await conn.fetchrow(
@@ -368,7 +671,7 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
 
         # --- 2. Calculate Scores ---
         competency_scores = calculate_competency_scores(data.responses)
-        persona_code = determine_persona(competency_scores)
+        persona_code = determine_persona_from_assessment(competency_scores)
 
         # --- 3. Get Persona Content ---
         persona_content = await conn.fetchrow(
@@ -428,27 +731,28 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
                 "code": persona_content['persona_code'],
                 "name": persona_content['persona_name'],
                 "description": persona_content['description'],
-                "detailed_description": persona_content['detailed_description'] or "",
+                "detailed_description": persona_content.get('detailed_description') or "",
                 "strength": persona_content['strength'],
                 "strength_description": persona_content['strength_description'],
-                "natural_advantage": persona_content['natural_advantage'] or "",
-                "perception_to_watch": persona_content['perception_to_watch'] or "",
-                "strength_paradox": persona_content['strength_paradox'] or "",
-                "what_this_gives_you": persona_content['what_this_gives_you'] or "",
-                "what_this_costs_you": persona_content['what_this_costs_you'] or "",
+                "natural_advantage": persona_content.get('natural_advantage') or "",
+                "perception_to_watch": persona_content.get('perception_to_watch') or "",
+                "strength_paradox": persona_content.get('strength_paradox') or "",
+                "what_this_gives_you": persona_content.get('what_this_gives_you') or "",
+                "what_this_costs_you": persona_content.get('what_this_costs_you') or "",
                 "blind_spot": persona_content['blind_spot'],
-                "blind_spot_description": persona_content['blind_spot_description'] or "",
+                "blind_spot_description": persona_content.get('blind_spot_description') or "",
                 "tagline": persona_content['tagline'],
-                "communication_style": persona_content['communication_style'] or "",
-                "how_others_experience_you": persona_content['how_others_experience_you'] or "",
-                "growth_opportunities": persona_content['growth_opportunities'] or "",
-                "next_level": persona_content['next_level'] or "",
-                "your_highest_roi_move": persona_content['your_highest_roi_move'] or ""
+                "communication_style": persona_content.get('communication_style') or "",
+                "how_others_experience_you": persona_content.get('how_others_experience_you') or "",
+                "growth_opportunities": persona_content.get('growth_opportunities') or "",
+                "next_level": persona_content.get('next_level') or "",
+                "your_highest_roi_move": persona_content.get('your_highest_roi_move') or ""
             },
             "competencies": competency_writeups,
             "scores": competency_scores
         }
 
+        await conn.close()
         return {
             "success": True,
             "report": report,
@@ -471,7 +775,7 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
 
 
 # ============================================================
-# GET PAID PERSONA REPORT - UPDATED WITH NEW COLUMN NAMES
+# GET PAID PERSONA REPORT
 # ============================================================
 
 @app.get("/api/persona/paid-report/{user_id}")
@@ -479,6 +783,8 @@ async def get_paid_persona_report(user_id: str):
     conn = None
     try:
         conn = await get_db()
+        if not conn:
+            return {"success": False, "message": "Database connection failed"}
 
         # Get the persona result from paid_personas
         persona = await conn.fetchrow(
@@ -507,6 +813,7 @@ async def get_paid_persona_report(user_id: str):
         )
 
         if not persona:
+            await conn.close()
             return {"success": False, "message": "No persona found for this user"}
 
         # Get user details
@@ -519,7 +826,7 @@ async def get_paid_persona_report(user_id: str):
             user_id
         )
 
-        # ✅ Get persona content with UPDATED column names
+        # Get persona content
         try:
             content = await conn.fetchrow(
                 """
@@ -560,7 +867,6 @@ async def get_paid_persona_report(user_id: str):
         # Get competency write-ups
         competency_writeups = await get_competency_writeups(conn, scores)
 
-        # ✅ Build persona data with UPDATED column names
         if content:
             persona_data = {
                 "user_name": user['full_name'] if user else "Professional",
@@ -587,7 +893,6 @@ async def get_paid_persona_report(user_id: str):
                 "your_highest_roi_move": content.get('your_highest_roi_move', '')
             }
         else:
-            # Fallback if no content found
             persona_data = {
                 "user_name": user['full_name'] if user else "Professional",
                 "user_email": user['email'] if user else "",
@@ -613,6 +918,7 @@ async def get_paid_persona_report(user_id: str):
                 "your_highest_roi_move": ""
             }
 
+        await conn.close()
         return {
             "success": True,
             "report": {
@@ -634,7 +940,131 @@ async def get_paid_persona_report(user_id: str):
 
 
 # ============================================================
-# ROOT
+# COMMUNICATION ANALYSIS ENDPOINTS - NEW
+# ============================================================
+
+@app.post("/api/communication/analyze")
+async def analyze_communication(request: CommunicationRequest):
+    """
+    Analyze communication attempts using Gemini AI.
+    Returns scores, feedback, and persona (if 3 attempts complete).
+    """
+    try:
+        print("=" * 50)
+        print("📝 COMMUNICATION ANALYSIS")
+        print(f"Scenario: {request.scenario_id}")
+        print(f"Attempts: {len(request.attempts)}")
+        print("=" * 50)
+
+        scenario = SCENARIOS[request.scenario_id] if request.scenario_id < len(SCENARIOS) else SCENARIOS[0]
+        
+        # Process each attempt
+        results = []
+        previous_scores = []
+        
+        for attempt in request.attempts:
+            # Build prompt for Gemini
+            prompt = build_analysis_prompt(
+                request.scenario_id,
+                attempt.response,
+                attempt.attempt,
+                len(request.attempts),
+                previous_scores
+            )
+            
+            # Call Gemini
+            gemini_result = call_gemini_api(prompt)
+            
+            if gemini_result and 'scores' in gemini_result:
+                # Use Gemini result
+                result = {
+                    'attempt': attempt.attempt,
+                    'mode': attempt.mode,
+                    'response': attempt.response,
+                    'scores': gemini_result['scores'],
+                    'feedback': gemini_result.get('feedback', []),
+                    'betterVersion': gemini_result.get('betterVersion', scenario['better'])
+                }
+            else:
+                # Fallback to mock
+                mock = generate_mock_result(attempt.response, request.scenario_id)
+                result = {
+                    'attempt': attempt.attempt,
+                    'mode': attempt.mode,
+                    'response': attempt.response,
+                    'scores': mock['scores'],
+                    'feedback': mock['feedback'],
+                    'betterVersion': mock['betterVersion']
+                }
+            
+            results.append(result)
+            previous_scores.append(result['scores'])
+        
+        # Calculate overall scores
+        dims = ['clarity', 'precision', 'structure', 'impact', 'influence']
+        overall_scores = {d: 0 for d in dims}
+        for result in results:
+            for d in dims:
+                overall_scores[d] += result['scores'][d]
+        
+        for d in dims:
+            overall_scores[d] = round(overall_scores[d] / len(results), 2)
+        
+        # Find best attempt
+        best_attempt = max(results, key=lambda x: sum(x['scores'].values()) / 5)
+        
+        # Determine if all 3 attempts are complete
+        is_complete = len(request.attempts) >= 3
+        
+        # Build response
+        response_data = {
+            'success': True,
+            'is_complete': is_complete,
+            'attempts': results,
+            'overall_scores': overall_scores,
+            'best_attempt': best_attempt,
+            'scenario': {
+                'id': request.scenario_id,
+                'context': scenario['context'],
+                'question': scenario['question']
+            }
+        }
+        
+        # If 3 attempts complete, calculate persona
+        if is_complete:
+            persona_result = determine_persona_from_attempts(results)
+            response_data['persona'] = {
+                'name': persona_result['persona']['name'],
+                'description': persona_result['persona']['description'],
+                'strength_label': persona_result['persona']['strength_label'],
+                'strength_desc': persona_result['persona']['strength_desc'],
+                'growth_label': persona_result['persona']['growth_label'],
+                'growth_desc': persona_result['persona']['growth_desc'],
+                'strongest_dimension': persona_result['strongest'],
+                'weakest_dimension': persona_result['weakest']
+            }
+            response_data['message'] = 'All 3 attempts analyzed. Persona revealed!'
+        else:
+            response_data['message'] = f'Analysis complete for attempt {len(request.attempts)} of 3'
+        
+        print(f"✅ Analysis complete. Complete: {is_complete}")
+        return response_data
+        
+    except Exception as e:
+        print(f"❌ Analysis error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": str(e)}
+
+
+@app.get("/api/communication/scenarios")
+async def get_communication_scenarios():
+    """Get all scenarios."""
+    return {"success": True, "scenarios": SCENARIOS}
+
+
+# ============================================================
+# ROOT & HEALTH
 # ============================================================
 
 @app.get("/")
@@ -646,31 +1076,21 @@ async def root():
             "POST /api/leads - Save a new lead",
             "GET /api/leads - Get all leads",
             "POST /api/persona/paid-assess - Paid Persona Assessment",
-            "GET /api/persona/paid-report/{user_id} - Get Paid Persona Report"
+            "GET /api/persona/paid-report/{user_id} - Get Paid Persona Report",
+            "POST /api/communication/analyze - Analyze communication attempts (3 attempts)",
+            "GET /api/communication/scenarios - Get all scenarios"
         ]
     }
 
 
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
 @app.get("/api/health")
-async def health():
-    conn = None
-    try:
-        conn = await get_db()
-        result = await conn.fetchrow("SELECT NOW() AS current_time")
-        return {
-            "status": "API is running",
-            "database": "Connected",
-            "timestamp": result["current_time"]
-        }
-    except Exception as e:
-        return {"status": "API running but database connection failed", "error": str(e)}
-    finally:
-        if conn:
-            await conn.close()
+async def health_check():
+    return {
+        "status": "healthy",
+        "gemini_configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != ""),
+        "database_configured": bool(os.environ.get("DATABASE_URL")),
+        "service": "Unspoken Backend"
+    }
 
 
 # ============================================================

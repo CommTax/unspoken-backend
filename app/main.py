@@ -366,8 +366,8 @@ async def get_competency_writeups(conn, competency_scores):
 # COMMUNICATION ANALYSIS - GEMINI FUNCTIONS
 # ============================================================
 
-def build_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None):
-    """Build the prompt for Gemini API."""
+def build_full_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None):
+    """Build the enhanced prompt for Gemini API with all required fields."""
     
     scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
     
@@ -397,8 +397,9 @@ Score the response on these 5 dimensions (0-100):
 
 Provide:
 1. Scores for each dimension (0-100)
-2. Specific, actionable feedback for improvement
+2. Specific, actionable feedback for improvement (5 bullet points, one for each dimension)
 3. A better version of the response
+4. Why the better version works (4 bullet points covering Clarity, Structure, Influence, Precision)
 
 RETURN ONLY VALID JSON in this exact format:
 {
@@ -410,10 +411,19 @@ RETURN ONLY VALID JSON in this exact format:
     "influence": 68
   },
   "feedback": [
-    "Your main point is clear but could be stronger.",
-    "Add more specific examples to strengthen your argument."
+    "⚠️ Unclear — Your main point isn't obvious. State your core message upfront.",
+    "⚠️ Vague — Use specific numbers, dates, or concrete examples.",
+    "⚠️ Scattered — Try: Context → Problem → Solution → Ask.",
+    "⚠️ Forgettable — What's the one thing you want them to remember?",
+    "⚠️ Uncompelling — Add a clear call to action."
   ],
-  "betterVersion": "Here is an improved version of your response..."
+  "betterVersion": "Here is an improved version of your response...",
+  "whyItWorks": [
+    "Clarity: States the main point immediately",
+    "Structure: Follows a logical flow: Context → Action → Ask",
+    "Influence: Ends with a clear, actionable question",
+    "Precision: Uses specific, concrete language"
+  ]
 }
 """
     return prompt
@@ -443,8 +453,8 @@ def call_gemini_api(prompt: str):
         return None
 
 
-def generate_mock_result(text: str, scenario_id: int = 0):
-    """Fallback mock analysis when Gemini is unavailable."""
+def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
+    """Enhanced fallback mock analysis with all fields."""
     word_count = len(text.split())
     has_structure = bool(re.search(r'first|second|finally|next|then|firstly|secondly', text, re.IGNORECASE))
     has_clear_ask = bool(re.search(r'\?|please|recommend|suggest|propose|request', text, re.IGNORECASE))
@@ -463,6 +473,7 @@ def generate_mock_result(text: str, scenario_id: int = 0):
         'influence': min(92, max(25, 35 + (22 if has_confidence else 0) + (18 if has_clear_ask else 0) + random.randint(-7, 7)))
     }
     
+    # Generate feedback based on scores
     feedback = []
     if scores['clarity'] < 65:
         feedback.append("⚠️ Unclear — Your main point isn't obvious. State your core message upfront.")
@@ -503,10 +514,19 @@ def generate_mock_result(text: str, scenario_id: int = 0):
     scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
     better_version = scenario['better']
     
+    # Generate "Why it works" based on the better version
+    why_it_works = [
+        "Clarity: States the main point immediately",
+        "Structure: Follows a logical flow: Context → Action → Ask",
+        "Influence: Ends with a clear, actionable question",
+        "Precision: Uses specific, concrete language"
+    ]
+    
     return {
         'scores': scores,
         'feedback': feedback,
-        'betterVersion': better_version
+        'betterVersion': better_version,
+        'whyItWorks': why_it_works
     }
 
 
@@ -947,7 +967,7 @@ async def get_paid_persona_report(user_id: str):
 async def analyze_communication(request: CommunicationRequest):
     """
     Analyze communication attempts using Gemini AI.
-    Returns scores, feedback, and persona (if 3 attempts complete).
+    Returns scores, feedback, better version, and why it works.
     """
     try:
         print("=" * 50)
@@ -956,6 +976,13 @@ async def analyze_communication(request: CommunicationRequest):
         print(f"Attempts: {len(request.attempts)}")
         print("=" * 50)
 
+        # ENFORCE 3 ATTEMPTS LIMIT
+        if len(request.attempts) > 3:
+            return {
+                "success": False, 
+                "message": "Maximum 3 attempts allowed per scenario. Please start a new scenario."
+            }
+
         scenario = SCENARIOS[request.scenario_id] if request.scenario_id < len(SCENARIOS) else SCENARIOS[0]
         
         # Process each attempt
@@ -963,8 +990,8 @@ async def analyze_communication(request: CommunicationRequest):
         previous_scores = []
         
         for attempt in request.attempts:
-            # Build prompt for Gemini
-            prompt = build_analysis_prompt(
+            # Build enhanced prompt for Gemini with ALL required fields
+            prompt = build_full_analysis_prompt(
                 request.scenario_id,
                 attempt.response,
                 attempt.attempt,
@@ -976,25 +1003,27 @@ async def analyze_communication(request: CommunicationRequest):
             gemini_result = call_gemini_api(prompt)
             
             if gemini_result and 'scores' in gemini_result:
-                # Use Gemini result
+                # Use Gemini result with all fields
                 result = {
                     'attempt': attempt.attempt,
                     'mode': attempt.mode,
                     'response': attempt.response,
                     'scores': gemini_result['scores'],
                     'feedback': gemini_result.get('feedback', []),
-                    'betterVersion': gemini_result.get('betterVersion', scenario['better'])
+                    'betterVersion': gemini_result.get('betterVersion', scenario['better']),
+                    'whyItWorks': gemini_result.get('whyItWorks', [])
                 }
             else:
-                # Fallback to mock
-                mock = generate_mock_result(attempt.response, request.scenario_id)
+                # Fallback to enhanced mock
+                mock = generate_enhanced_mock_result(attempt.response, request.scenario_id)
                 result = {
                     'attempt': attempt.attempt,
                     'mode': attempt.mode,
                     'response': attempt.response,
                     'scores': mock['scores'],
                     'feedback': mock['feedback'],
-                    'betterVersion': mock['betterVersion']
+                    'betterVersion': mock['betterVersion'],
+                    'whyItWorks': mock['whyItWorks']
                 }
             
             results.append(result)
@@ -1027,7 +1056,8 @@ async def analyze_communication(request: CommunicationRequest):
                 'id': request.scenario_id,
                 'context': scenario['context'],
                 'question': scenario['question']
-            }
+            },
+            'attempts_remaining': max(0, 3 - len(request.attempts))
         }
         
         # If 3 attempts complete, calculate persona
@@ -1077,7 +1107,7 @@ async def root():
             "GET /api/leads - Get all leads",
             "POST /api/persona/paid-assess - Paid Persona Assessment",
             "GET /api/persona/paid-report/{user_id} - Get Paid Persona Report",
-            "POST /api/communication/analyze - Analyze communication attempts (3 attempts)",
+            "POST /api/communication/analyze - Analyze communication attempts (max 3)",
             "GET /api/communication/scenarios - Get all scenarios"
         ]
     }

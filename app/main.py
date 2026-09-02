@@ -98,7 +98,7 @@ def verify_password(password: str, hashed: str):
 
 
 # ============================================================
-# MODELS - UPDATED TO HANDLE BOTH PAYLOAD FORMATS
+# MODELS
 # ============================================================
 
 class LeadCreate(BaseModel):
@@ -165,39 +165,34 @@ class CommunicationRequest(BaseModel):
 
 
 # ============================================================
-# SCENARIOS DATA
+# SCENARIOS DATA - Without "better" field
 # ============================================================
 
 SCENARIOS = [
     {
         "id": 0,
         "context": "Your team missed a key deadline. You need to update your manager.",
-        "question": "Your manager asks: 'What happened with the deadline, and what's your plan to fix it?'",
-        "better": "We're behind on the project timeline due to unexpected technical dependencies. I've identified the bottlenecks and created a recovery plan. We can deliver by Friday if we reprioritize the backlog. I'll share the detailed plan after this meeting. Does that approach work for you?"
+        "question": "Your manager asks: 'What happened with the deadline, and what's your plan to fix it?'"
     },
     {
         "id": 1,
         "context": "A client says your proposal is too expensive. You need to respond and keep the deal alive.",
-        "question": "The client says: 'Your price is 30% higher than your competitor's. Why should we go with you?'",
-        "better": "I understand budget is a concern. Let me walk you through the ROI — this solution saves you 30% on operational costs within the first year. I can also offer a phased deployment to spread the cost. Would a 6-month payment plan work for your team?"
+        "question": "The client says: 'Your price is 30% higher than your competitor's. Why should we go with you?'"
     },
     {
         "id": 2,
         "context": "You want to ask your manager for a promotion. Draft your pitch.",
-        "question": "Your manager says: 'Tell me why you deserve a promotion right now.'",
-        "better": "I'd like to discuss advancing to the next level. Over the past year, I've exceeded my targets by 20%, led two successful product launches, and taken on mentorship responsibilities. I believe I'm ready to take on more strategic ownership. Can we schedule time next week to discuss this?"
+        "question": "Your manager says: 'Tell me why you deserve a promotion right now.'"
     },
     {
         "id": 3,
         "context": "You need to give constructive feedback to a teammate who's been underperforming.",
-        "question": "Your teammate asks: 'Is there anything I could be doing better?'",
-        "better": "I want to discuss your recent deliverables. I've noticed a few inconsistencies in quality and missed deadlines. I know you're capable of great work — what support do you need from me to get back on track? Let's work together to improve this."
+        "question": "Your teammate asks: 'Is there anything I could be doing better?'"
     },
     {
         "id": 4,
         "context": "You're in a job interview. The interviewer asks the classic opening question.",
-        "question": "Interviewer: 'Tell me about yourself.'",
-        "better": "I'm a product manager with 5 years of experience in fintech. I led the launch of a mobile banking app that grew to 200K users in 6 months. I specialize in bridging the gap between business goals and technical execution. I'm looking to bring that expertise to a scaling startup like yours."
+        "question": "Interviewer: 'Tell me about yourself.'"
     }
 ]
 
@@ -463,7 +458,7 @@ Now provide your analysis in this exact JSON format:
     "⚠️ Forgettable — What's the one thing you want them to remember?",
     "⚠️ Uncompelling — Add a clear call to action."
   ],
-  "betterVersion": "Here is an improved version of your response...",
+  "betterVersion": "Based on the feedback, here is a rewritten version of their response that addresses the issues identified. Make it natural and maintain their authentic voice while applying the coaching feedback.",
   "whyItWorks": [
     "Clarity: States the main point immediately",
     "Structure: Follows a logical flow: Context → Action → Ask",
@@ -471,6 +466,12 @@ Now provide your analysis in this exact JSON format:
     "Precision: Uses specific, concrete language"
   ]
 }
+
+CRITICAL: The 'betterVersion' must be a complete rewrite of their response that:
+1. Addresses all the feedback provided
+2. Maintains their authentic voice and style
+3. Shows a clear improvement over the original
+4. Is practical and immediately usable
 
 RETURN ONLY VALID JSON. Do not include any other text or explanation.
 """
@@ -502,7 +503,7 @@ def call_gemini_api(prompt: str):
 
 
 def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
-    """Enhanced fallback mock analysis with all fields."""
+    """Enhanced fallback mock analysis with all fields - generates better version dynamically."""
     word_count = len(text.split())
     has_structure = bool(re.search(r'first|second|finally|next|then|firstly|secondly', text, re.IGNORECASE))
     has_clear_ask = bool(re.search(r'\?|please|recommend|suggest|propose|request', text, re.IGNORECASE))
@@ -558,17 +559,51 @@ def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
     else:
         feedback.append("✅ Influential — Compelling case with clear action.")
     
-    # Get better version from scenarios
-    scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
-    better_version = scenario['better']
+    # --- GENERATE BETTER VERSION DYNAMICALLY ---
+    # Start with the original text and apply improvements
+    better_version = text
     
-    # Generate "Why it works" based on the better version
+    # Apply improvements based on feedback
+    if scores['clarity'] < 65:
+        # Add a clear opening statement
+        better_version = "I want to be clear: " + better_version
+    
+    if scores['structure'] < 65:
+        # Add structure markers
+        if not has_structure:
+            sentences = better_version.split('. ')
+            if len(sentences) > 1:
+                better_version = sentences[0] + '. First, ' + '. '.join(sentences[1:])
+    
+    if scores['precision'] < 65 and not has_numbers:
+        # Suggest adding specifics
+        better_version += " To give you a more specific picture, I can provide concrete examples and data."
+    
+    if scores['influence'] < 65 and not has_clear_ask:
+        # Add a call to action
+        better_version += " Does that approach work for you? I'd value your feedback."
+    
+    if scores['impact'] < 65:
+        # Add a strong closing
+        better_version += " This is the key point I want you to remember."
+    
+    # Generate "Why it works" based on the improvements
     why_it_works = [
-        "Clarity: States the main point immediately",
-        "Structure: Follows a logical flow: Context → Action → Ask",
-        "Influence: Ends with a clear, actionable question",
-        "Precision: Uses specific, concrete language"
+        "Clarity: States the main point clearly and directly",
+        "Structure: Organized with a logical flow",
+        "Influence: Includes a specific call to action",
+        "Precision: Uses concrete language and specific details"
     ]
+    
+    # Customize why it works based on the actual feedback
+    if scores['clarity'] < 65:
+        why_it_works[0] = "Clarity: Opens with a clear statement of purpose, making the intention immediately understood"
+    if scores['structure'] < 65:
+        why_it_works[1] = "Structure: Uses transitional phrases to guide the listener through the response"
+    if scores['precision'] < 65:
+        why_it_works[3] = "Precision: Includes specific details and concrete examples to support the message"
+    if scores['influence'] < 65:
+        why_it_works[2] = "Influence: Ends with a specific, actionable question that moves the conversation forward"
     
     return {
         'scores': scores,
@@ -1008,7 +1043,7 @@ async def get_paid_persona_report(user_id: str):
 
 
 # ============================================================
-# COMMUNICATION ANALYSIS ENDPOINT - UPDATED
+# COMMUNICATION ANALYSIS ENDPOINT
 # ============================================================
 
 @app.post("/api/communication/analyze")
@@ -1077,25 +1112,25 @@ async def analyze_communication(request: CommunicationRequest):
                 attempt.attempt,
                 len(attempts_data),
                 previous_scores,
-                request.coaching_instructions  # Pass coaching instructions to prompt
+                request.coaching_instructions
             )
             
             # Call Gemini
             gemini_result = call_gemini_api(prompt)
             
             if gemini_result and 'scores' in gemini_result:
-                # Use Gemini result with all fields
+                # Use Gemini result with all fields (betterVersion generated by Gemini)
                 result = {
                     'attempt': attempt.attempt,
                     'mode': attempt.mode,
                     'response': attempt.response,
                     'scores': gemini_result['scores'],
                     'feedback': gemini_result.get('feedback', []),
-                    'betterVersion': gemini_result.get('betterVersion', scenario['better']),
+                    'betterVersion': gemini_result.get('betterVersion', ''),  # Now generated by Gemini
                     'whyItWorks': gemini_result.get('whyItWorks', [])
                 }
             else:
-                # Fallback to enhanced mock
+                # Fallback to enhanced mock (also generates better version dynamically)
                 mock = generate_enhanced_mock_result(attempt.response, request.scenario_id)
                 result = {
                     'attempt': attempt.attempt,
@@ -1103,7 +1138,7 @@ async def analyze_communication(request: CommunicationRequest):
                     'response': attempt.response,
                     'scores': mock['scores'],
                     'feedback': mock['feedback'],
-                    'betterVersion': mock['betterVersion'],
+                    'betterVersion': mock['betterVersion'],  # Now generated dynamically
                     'whyItWorks': mock['whyItWorks']
                 }
             

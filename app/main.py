@@ -1,5 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from dotenv import load_dotenv
 import os
 import asyncpg
@@ -17,6 +20,10 @@ import google.generativeai as genai
 
 load_dotenv()
 
+# ============================================================
+# CREATE APP FIRST
+# ============================================================
+
 app = FastAPI(
     title="Unspoken Backend",
     description="Paid Persona Assessment + Communication Analysis",
@@ -24,33 +31,63 @@ app = FastAPI(
 )
 
 # ============================================================
-# CORS CONFIGURATION - FIXED
+# AGGRESSIVE CORS FIX - MUST BE FIRST
+# ============================================================
+
+class ForceCORS:
+    """Force CORS headers on ALL responses including OPTIONS preflight"""
+    def __init__(self, app):
+        self.app = app
+    
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            # Handle OPTIONS preflight requests
+            if scope["method"] == "OPTIONS":
+                response = Response(
+                    status_code=200,
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With, Access-Control-Request-Method, Access-Control-Request-Headers",
+                        "Access-Control-Allow-Credentials": "true",
+                        "Access-Control-Max-Age": "3600"
+                    }
+                )
+                await response(scope, receive, send)
+                return
+            
+            # Process regular requests
+            async def send_wrapper(message):
+                if message["type"] == "http.response.start":
+                    headers = dict(message.get("headers", []))
+                    # Add CORS headers to ALL responses
+                    headers[b"access-control-allow-origin"] = b"*"
+                    headers[b"access-control-allow-methods"] = b"GET, POST, PUT, DELETE, OPTIONS"
+                    headers[b"access-control-allow-headers"] = b"Content-Type, Authorization, Accept, Origin, X-Requested-With"
+                    headers[b"access-control-allow-credentials"] = b"true"
+                    headers[b"access-control-max-age"] = b"3600"
+                    message["headers"] = list(headers.items())
+                await send(message)
+            
+            await self.app(scope, receive, send_wrapper)
+        else:
+            await self.app(scope, receive, send)
+
+# Apply the CORS middleware (MUST BE FIRST)
+app = ForceCORS(app)
+
+# ============================================================
+# ADDITIONAL CORS MIDDLEWARE (BACKUP)
 # ============================================================
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://theunspoken.co.in",
-        "https://www.theunspoken.co.in",
-        "http://localhost:3000",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "http://localhost:8000",
-        "https://unspoken-backend.onrender.com"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-        "Accept",
-        "Origin",
-        "X-Requested-With",
-        "Access-Control-Request-Method",
-        "Access-Control-Request-Headers"
-    ],
-    expose_headers=["Content-Length", "Content-Type"],
-    max_age=600  # Cache preflight for 10 minutes
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600
 )
 
 # ============================================================
@@ -167,26 +204,19 @@ class CoachingInstructions(BaseModel):
 
 
 class CommunicationRequest(BaseModel):
-    # Core fields - scenario_id is required
     scenario_id: int
-    
-    # For new format with attempts array
     attempts: Optional[List[AttemptData]] = None
-    
-    # For backward compatibility with old format
     scenario_context: Optional[str] = None
     scenario_question: Optional[str] = None
     response: Optional[str] = None
     attempt: Optional[int] = None
     mode: Optional[str] = None
     previous_attempts: Optional[List[Dict[str, Any]]] = None
-    
-    # Coaching instructions (optional)
     coaching_instructions: Optional[CoachingInstructions] = None
 
 
 # ============================================================
-# SCENARIOS DATA - Without "better" field
+# SCENARIOS DATA
 # ============================================================
 
 SCENARIOS = [
@@ -271,9 +301,6 @@ PERSONA_MAP = {
 # ============================================================
 
 def calculate_competency_scores(responses):
-    """
-    Calculate scores for 5 competencies from 30 questions.
-    """
     category_mapping = {
         'structure': ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6'],
         'thinking': ['Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12'],
@@ -395,7 +422,6 @@ async def get_competency_writeups(conn, competency_scores):
                 }
                 continue
         
-        # Fallback if no DB or no row found
         writeups[competency] = {
             'score': score,
             'score_range': score_range,
@@ -416,8 +442,6 @@ async def get_competency_writeups(conn, competency_scores):
 # ============================================================
 
 def build_full_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None, coaching_instructions: CoachingInstructions = None):
-    """Build the enhanced prompt for Gemini API with all required fields."""
-    
     scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
     
     prompt = f"""
@@ -435,7 +459,6 @@ This is attempt {attempt} of {total_attempts}.
         prompt += f"\nPREVIOUS ATTEMPTS SCORES: {json.dumps(previous_scores)}"
         prompt += "\nCompare this attempt to the previous ones. Note improvement or decline."
 
-    # Add coaching instructions if provided
     if coaching_instructions:
         prompt += "\n\nCOACHING INSTRUCTIONS:"
         
@@ -500,7 +523,6 @@ RETURN ONLY VALID JSON. Do not include any other text or explanation.
 
 
 def call_gemini_api(prompt: str):
-    """Call Gemini API with the prompt."""
     try:
         if not GEMINI_API_KEY or not model:
             print("⚠️ Gemini not available - API key or model missing")
@@ -510,11 +532,9 @@ def call_gemini_api(prompt: str):
         response = model.generate_content(prompt)
         print(f"✅ Gemini API response received: {len(response.text)} chars")
         
-        # Extract JSON from response
         text = response.text
-        print(f"📝 Raw response: {text[:200]}...")
+        print(f"📝 Raw response preview: {text[:200]}...")
         
-        # Try to find JSON in the response
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
@@ -532,7 +552,6 @@ def call_gemini_api(prompt: str):
 
 
 def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
-    """Enhanced fallback mock analysis with all fields - generates better version dynamically."""
     word_count = len(text.split())
     has_structure = bool(re.search(r'first|second|finally|next|then|firstly|secondly', text, re.IGNORECASE))
     has_clear_ask = bool(re.search(r'\?|please|recommend|suggest|propose|request', text, re.IGNORECASE))
@@ -551,7 +570,6 @@ def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
         'influence': min(92, max(25, 35 + (22 if has_confidence else 0) + (18 if has_clear_ask else 0) + random.randint(-7, 7)))
     }
     
-    # Generate feedback based on scores
     feedback = []
     if scores['clarity'] < 65:
         feedback.append("⚠️ Unclear — Your main point isn't obvious. State your core message upfront.")
@@ -588,10 +606,8 @@ def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
     else:
         feedback.append("✅ Influential — Compelling case with clear action.")
     
-    # --- GENERATE BETTER VERSION DYNAMICALLY ---
     better_version = text
     
-    # Apply improvements based on feedback
     if scores['clarity'] < 65:
         better_version = "I want to be clear: " + better_version
     
@@ -635,7 +651,6 @@ def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
 
 
 def determine_persona_from_attempts(attempts_data: list):
-    """Determine persona based on all attempts."""
     dims = ['clarity', 'precision', 'structure', 'impact', 'influence']
     totals = {d: 0 for d in dims}
     
@@ -644,7 +659,6 @@ def determine_persona_from_attempts(attempts_data: list):
         for d in dims:
             totals[d] += scores.get(d, 50)
     
-    # Find strongest
     strongest = max(totals, key=totals.get)
     weakest = min(totals, key=totals.get)
     
@@ -762,7 +776,6 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
         if not conn:
             return {"success": False, "message": "Database connection failed"}
 
-        # --- 1. Create or Get User ---
         user = await conn.fetchrow(
             "SELECT user_id FROM users WHERE email = $1",
             data.user_details.email
@@ -793,11 +806,9 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
             )
             print(f"✅ Existing user updated: {user_id}")
 
-        # --- 2. Calculate Scores ---
         competency_scores = calculate_competency_scores(data.responses)
         persona_code = determine_persona_from_assessment(competency_scores)
 
-        # --- 3. Get Persona Content ---
         persona_content = await conn.fetchrow(
             "SELECT * FROM persona_content WHERE persona_code = $1",
             persona_code
@@ -807,10 +818,8 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
                 "SELECT * FROM persona_content WHERE persona_code = 'ARTICULATOR'"
             )
 
-        # --- 4. Get Competency Write-ups ---
         competency_writeups = await get_competency_writeups(conn, competency_scores)
 
-        # --- 5. Store Responses ---
         for r in data.responses:
             await conn.execute(
                 """
@@ -822,7 +831,6 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
                 r.get('answer')
             )
 
-        # --- 6. Store Persona Result ---
         await conn.execute(
             """
             INSERT INTO paid_personas (
@@ -849,7 +857,6 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
             json.dumps(competency_scores)
         )
 
-        # --- 7. Build Report ---
         report = {
             "persona": {
                 "code": persona_content['persona_code'],
@@ -898,10 +905,6 @@ async def paid_persona_assessment(data: PersonaAssessmentRequest):
             await conn.close()
 
 
-# ============================================================
-# GET PAID PERSONA REPORT
-# ============================================================
-
 @app.get("/api/persona/paid-report/{user_id}")
 async def get_paid_persona_report(user_id: str):
     conn = None
@@ -910,7 +913,6 @@ async def get_paid_persona_report(user_id: str):
         if not conn:
             return {"success": False, "message": "Database connection failed"}
 
-        # Get the persona result from paid_personas
         persona = await conn.fetchrow(
             """
             SELECT 
@@ -940,7 +942,6 @@ async def get_paid_persona_report(user_id: str):
             await conn.close()
             return {"success": False, "message": "No persona found for this user"}
 
-        # Get user details
         user = await conn.fetchrow(
             """
             SELECT full_name, email, phone
@@ -950,7 +951,6 @@ async def get_paid_persona_report(user_id: str):
             user_id
         )
 
-        # Get persona content
         try:
             content = await conn.fetchrow(
                 """
@@ -988,7 +988,6 @@ async def get_paid_persona_report(user_id: str):
         if isinstance(scores, str):
             scores = json.loads(scores)
 
-        # Get competency write-ups
         competency_writeups = await get_competency_writeups(conn, scores)
 
         if content:
@@ -1071,8 +1070,6 @@ async def get_paid_persona_report(user_id: str):
 async def analyze_communication(request: CommunicationRequest):
     """
     Analyze communication attempts using Gemini AI.
-    Handles both enhanced payload with coaching instructions and simple payload.
-    Returns scores, feedback, better version, and why it works.
     """
     try:
         print("=" * 50)
@@ -1083,11 +1080,9 @@ async def analyze_communication(request: CommunicationRequest):
         attempts_data = []
         
         if request.attempts:
-            # New format: attempts array provided
             attempts_data = request.attempts
             print(f"✅ Using attempts array format: {len(attempts_data)} attempts")
         elif request.response:
-            # Old/Backward compatible format: single attempt with response
             print("✅ Using single attempt format")
             attempts_data = [AttemptData(
                 attempt=request.attempt or 1,
@@ -1095,7 +1090,6 @@ async def analyze_communication(request: CommunicationRequest):
                 mode=request.mode or 'text'
             )]
             
-            # Include previous attempts if provided
             if request.previous_attempts:
                 for prev in request.previous_attempts:
                     attempts_data.insert(0, AttemptData(
@@ -1126,7 +1120,6 @@ async def analyze_communication(request: CommunicationRequest):
         previous_scores = []
         
         for attempt in attempts_data:
-            # Build enhanced prompt for Gemini with coaching instructions
             prompt = build_full_analysis_prompt(
                 request.scenario_id,
                 attempt.response,
@@ -1136,11 +1129,9 @@ async def analyze_communication(request: CommunicationRequest):
                 request.coaching_instructions
             )
             
-            # Call Gemini
             gemini_result = call_gemini_api(prompt)
             
             if gemini_result and 'scores' in gemini_result:
-                # Use Gemini result with all fields (betterVersion generated by Gemini)
                 result = {
                     'attempt': attempt.attempt,
                     'mode': attempt.mode,
@@ -1151,7 +1142,6 @@ async def analyze_communication(request: CommunicationRequest):
                     'whyItWorks': gemini_result.get('whyItWorks', [])
                 }
             else:
-                # Fallback to enhanced mock (also generates better version dynamically)
                 mock = generate_enhanced_mock_result(attempt.response, request.scenario_id)
                 result = {
                     'attempt': attempt.attempt,
@@ -1176,13 +1166,9 @@ async def analyze_communication(request: CommunicationRequest):
         for d in dims:
             overall_scores[d] = round(overall_scores[d] / len(results), 2)
         
-        # Find best attempt
         best_attempt = max(results, key=lambda x: sum(x['scores'].values()) / 5)
-        
-        # Determine if all 3 attempts are complete
         is_complete = len(results) >= 3
         
-        # Build response
         response_data = {
             'success': True,
             'is_complete': is_complete,
@@ -1197,7 +1183,6 @@ async def analyze_communication(request: CommunicationRequest):
             'attempts_remaining': max(0, 3 - len(results))
         }
         
-        # If 3 attempts complete, calculate persona
         if is_complete:
             persona_result = determine_persona_from_attempts(results)
             response_data['persona'] = {
@@ -1233,7 +1218,6 @@ async def get_communication_scenarios():
 @app.get("/api/test-gemini")
 async def test_gemini():
     """Test if Gemini API is working."""
-    # Check configuration
     config_status = {
         "gemini_key_set": bool(GEMINI_API_KEY),
         "gemini_key_value": GEMINI_API_KEY[:10] + "..." if GEMINI_API_KEY else "None",
@@ -1256,7 +1240,6 @@ async def test_gemini():
         }
     
     try:
-        # Simple test prompt
         test_prompt = "Reply with exactly: 'Gemini is working correctly!'"
         response = model.generate_content(test_prompt)
         
@@ -1275,8 +1258,19 @@ async def test_gemini():
         }
 
 
+@app.get("/api/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "gemini_configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != ""),
+        "database_configured": bool(os.environ.get("DATABASE_URL")),
+        "service": "Unspoken Backend",
+        "cors_configured": True
+    }
+
+
 # ============================================================
-# ROOT & HEALTH
+# ROOT ENDPOINT
 # ============================================================
 
 @app.get("/")
@@ -1291,19 +1285,9 @@ async def root():
             "GET /api/persona/paid-report/{user_id} - Get Paid Persona Report",
             "POST /api/communication/analyze - Analyze communication attempts (max 3)",
             "GET /api/communication/scenarios - Get all scenarios",
-            "GET /api/test-gemini - Test Gemini API connection"
+            "GET /api/test-gemini - Test Gemini API connection",
+            "GET /api/health - Health check"
         ]
-    }
-
-
-@app.get("/api/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "gemini_configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != ""),
-        "database_configured": bool(os.environ.get("DATABASE_URL")),
-        "service": "Unspoken Backend",
-        "cors_configured": True
     }
 
 

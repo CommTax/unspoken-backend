@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
 import asyncpg
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import re
 import uuid
@@ -98,7 +98,7 @@ def verify_password(password: str, hashed: str):
 
 
 # ============================================================
-# MODELS
+# MODELS - UPDATED TO HANDLE BOTH PAYLOAD FORMATS
 # ============================================================
 
 class LeadCreate(BaseModel):
@@ -126,9 +126,42 @@ class AttemptData(BaseModel):
     mode: str  # 'voice' or 'text'
 
 
+class AnalysisDimension(BaseModel):
+    name: str
+    description: str
+
+
+class FeedbackStyle(BaseModel):
+    tone: str
+    format: str
+    priority: str
+
+
+class CoachingInstructions(BaseModel):
+    analysis_dimensions: Optional[List[AnalysisDimension]] = None
+    feedback_style: Optional[FeedbackStyle] = None
+    better_version_instructions: Optional[List[str]] = None
+    why_it_works_instructions: Optional[List[str]] = None
+    user_context: Optional[Dict[str, Any]] = None
+
+
 class CommunicationRequest(BaseModel):
+    # Core fields - scenario_id is required
     scenario_id: int
-    attempts: List[AttemptData]
+    
+    # For new format with attempts array
+    attempts: Optional[List[AttemptData]] = None
+    
+    # For backward compatibility with old format
+    scenario_context: Optional[str] = None
+    scenario_question: Optional[str] = None
+    response: Optional[str] = None
+    attempt: Optional[int] = None
+    mode: Optional[str] = None
+    previous_attempts: Optional[List[Dict[str, Any]]] = None
+    
+    # Coaching instructions (optional)
+    coaching_instructions: Optional[CoachingInstructions] = None
 
 
 # ============================================================
@@ -366,7 +399,7 @@ async def get_competency_writeups(conn, competency_scores):
 # COMMUNICATION ANALYSIS - GEMINI FUNCTIONS
 # ============================================================
 
-def build_full_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None):
+def build_full_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None, coaching_instructions: CoachingInstructions = None):
     """Build the enhanced prompt for Gemini API with all required fields."""
     
     scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
@@ -386,22 +419,35 @@ This is attempt {attempt} of {total_attempts}.
         prompt += f"\nPREVIOUS ATTEMPTS SCORES: {json.dumps(previous_scores)}"
         prompt += "\nCompare this attempt to the previous ones. Note improvement or decline."
 
+    # Add coaching instructions if provided
+    if coaching_instructions:
+        prompt += "\n\nCOACHING INSTRUCTIONS:"
+        
+        if coaching_instructions.analysis_dimensions:
+            prompt += "\n\nAnalyze these dimensions:"
+            for dim in coaching_instructions.analysis_dimensions:
+                prompt += f"\n- {dim.name.upper()}: {dim.description}"
+        
+        if coaching_instructions.feedback_style:
+            prompt += f"\n\nFEEDBACK STYLE:"
+            prompt += f"\n- Tone: {coaching_instructions.feedback_style.tone}"
+            prompt += f"\n- Format: {coaching_instructions.feedback_style.format}"
+            prompt += f"\n- Priority: {coaching_instructions.feedback_style.priority}"
+        
+        if coaching_instructions.better_version_instructions:
+            prompt += "\n\nBETTER VERSION INSTRUCTIONS:"
+            for instruction in coaching_instructions.better_version_instructions:
+                prompt += f"\n- {instruction}"
+        
+        if coaching_instructions.why_it_works_instructions:
+            prompt += "\n\nWHY IT WORKS INSTRUCTIONS:"
+            for instruction in coaching_instructions.why_it_works_instructions:
+                prompt += f"\n- {instruction}"
+
     prompt += """
 
-Score the response on these 5 dimensions (0-100):
-1. CLARITY - Is the main point obvious and well-stated?
-2. PRECISION - Are specific details, examples, or numbers used?
-3. STRUCTURE - Is the response organized logically?
-4. IMPACT - Will the listener remember the key message?
-5. INFLUENCE - Does it persuade or drive action?
+Now provide your analysis in this exact JSON format:
 
-Provide:
-1. Scores for each dimension (0-100)
-2. Specific, actionable feedback for improvement (5 bullet points, one for each dimension)
-3. A better version of the response
-4. Why the better version works (4 bullet points covering Clarity, Structure, Influence, Precision)
-
-RETURN ONLY VALID JSON in this exact format:
 {
   "scores": {
     "clarity": 75,
@@ -425,6 +471,8 @@ RETURN ONLY VALID JSON in this exact format:
     "Precision: Uses specific, concrete language"
   ]
 }
+
+RETURN ONLY VALID JSON. Do not include any other text or explanation.
 """
     return prompt
 
@@ -960,28 +1008,60 @@ async def get_paid_persona_report(user_id: str):
 
 
 # ============================================================
-# COMMUNICATION ANALYSIS ENDPOINTS - NEW
+# COMMUNICATION ANALYSIS ENDPOINT - UPDATED
 # ============================================================
 
 @app.post("/api/communication/analyze")
 async def analyze_communication(request: CommunicationRequest):
     """
     Analyze communication attempts using Gemini AI.
+    Handles both enhanced payload with coaching instructions and simple payload.
     Returns scores, feedback, better version, and why it works.
     """
     try:
         print("=" * 50)
         print("📝 COMMUNICATION ANALYSIS")
         print(f"Scenario: {request.scenario_id}")
-        print(f"Attempts: {len(request.attempts)}")
-        print("=" * 50)
-
+        
+        # --- EXTRACT ATTEMPTS FROM PAYLOAD ---
+        attempts_data = []
+        
+        if request.attempts:
+            # New format: attempts array provided
+            attempts_data = request.attempts
+            print(f"✅ Using attempts array format: {len(attempts_data)} attempts")
+        elif request.response:
+            # Old/Backward compatible format: single attempt with response
+            print("✅ Using single attempt format")
+            attempts_data = [AttemptData(
+                attempt=request.attempt or 1,
+                response=request.response,
+                mode=request.mode or 'text'
+            )]
+            
+            # Include previous attempts if provided
+            if request.previous_attempts:
+                for prev in request.previous_attempts:
+                    attempts_data.insert(0, AttemptData(
+                        attempt=prev.get('attempt', 1),
+                        response=prev.get('response', ''),
+                        mode=prev.get('mode', 'text')
+                    ))
+                print(f"✅ Added {len(request.previous_attempts)} previous attempts")
+        else:
+            return {"success": False, "message": "No attempt data provided"}
+        
         # ENFORCE 3 ATTEMPTS LIMIT
-        if len(request.attempts) > 3:
+        if len(attempts_data) > 3:
             return {
                 "success": False, 
                 "message": "Maximum 3 attempts allowed per scenario. Please start a new scenario."
             }
+        
+        print(f"Total attempts: {len(attempts_data)}")
+        if request.coaching_instructions:
+            print("✅ Coaching instructions provided")
+        print("=" * 50)
 
         scenario = SCENARIOS[request.scenario_id] if request.scenario_id < len(SCENARIOS) else SCENARIOS[0]
         
@@ -989,14 +1069,15 @@ async def analyze_communication(request: CommunicationRequest):
         results = []
         previous_scores = []
         
-        for attempt in request.attempts:
-            # Build enhanced prompt for Gemini with ALL required fields
+        for attempt in attempts_data:
+            # Build enhanced prompt for Gemini with coaching instructions
             prompt = build_full_analysis_prompt(
                 request.scenario_id,
                 attempt.response,
                 attempt.attempt,
-                len(request.attempts),
-                previous_scores
+                len(attempts_data),
+                previous_scores,
+                request.coaching_instructions  # Pass coaching instructions to prompt
             )
             
             # Call Gemini
@@ -1043,7 +1124,7 @@ async def analyze_communication(request: CommunicationRequest):
         best_attempt = max(results, key=lambda x: sum(x['scores'].values()) / 5)
         
         # Determine if all 3 attempts are complete
-        is_complete = len(request.attempts) >= 3
+        is_complete = len(results) >= 3
         
         # Build response
         response_data = {
@@ -1057,7 +1138,7 @@ async def analyze_communication(request: CommunicationRequest):
                 'context': scenario['context'],
                 'question': scenario['question']
             },
-            'attempts_remaining': max(0, 3 - len(request.attempts))
+            'attempts_remaining': max(0, 3 - len(results))
         }
         
         # If 3 attempts complete, calculate persona
@@ -1075,7 +1156,7 @@ async def analyze_communication(request: CommunicationRequest):
             }
             response_data['message'] = 'All 3 attempts analyzed. Persona revealed!'
         else:
-            response_data['message'] = f'Analysis complete for attempt {len(request.attempts)} of 3'
+            response_data['message'] = f'Analysis complete for attempt {len(results)} of 3'
         
         print(f"✅ Analysis complete. Complete: {is_complete}")
         return response_data

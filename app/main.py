@@ -21,7 +21,7 @@ import google.generativeai as genai
 load_dotenv()
 
 # ============================================================
-# CREATE APP FIRST
+# CREATE APP
 # ============================================================
 
 app = FastAPI(
@@ -31,58 +31,20 @@ app = FastAPI(
 )
 
 # ============================================================
-# AGGRESSIVE CORS FIX - MUST BE FIRST
+# CORS MIDDLEWARE - CORRECTED
 # ============================================================
 
-class ForceCORS:
-    """Force CORS headers on ALL responses including OPTIONS preflight"""
-    def __init__(self, app):
-        self.app = app
-    
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            # Handle OPTIONS preflight requests
-            if scope["method"] == "OPTIONS":
-                response = Response(
-                    status_code=200,
-                    headers={
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-                        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With, Access-Control-Request-Method, Access-Control-Request-Headers",
-                        "Access-Control-Allow-Credentials": "true",
-                        "Access-Control-Max-Age": "3600"
-                    }
-                )
-                await response(scope, receive, send)
-                return
-            
-            # Process regular requests
-            async def send_wrapper(message):
-                if message["type"] == "http.response.start":
-                    headers = dict(message.get("headers", []))
-                    # Add CORS headers to ALL responses
-                    headers[b"access-control-allow-origin"] = b"*"
-                    headers[b"access-control-allow-methods"] = b"GET, POST, PUT, DELETE, OPTIONS"
-                    headers[b"access-control-allow-headers"] = b"Content-Type, Authorization, Accept, Origin, X-Requested-With"
-                    headers[b"access-control-allow-credentials"] = b"true"
-                    headers[b"access-control-max-age"] = b"3600"
-                    message["headers"] = list(headers.items())
-                await send(message)
-            
-            await self.app(scope, receive, send_wrapper)
-        else:
-            await self.app(scope, receive, send)
-
-# Apply the CORS middleware (MUST BE FIRST)
-app = ForceCORS(app)
-
-# ============================================================
-# ADDITIONAL CORS MIDDLEWARE (BACKUP)
-# ============================================================
-
+# Add CORS middleware directly
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://theunspoken.co.in",
+        "https://www.theunspoken.co.in",
+        "http://localhost:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "*"  # Allow all for testing
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

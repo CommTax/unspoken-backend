@@ -1057,13 +1057,81 @@ async def analyze_communication(request: CommunicationRequest):
 
         scenario = SCENARIOS[request.scenario_id] if request.scenario_id < len(SCENARIOS) else SCENARIOS[0]
         
-        # Process each attempt with deep analysis
-        results = []
-        previous_responses = []
-        
-        for attempt in attempts_data:
-            print(f"\n📝 Analyzing Attempt {attempt['attempt']}...")
-            print(f"   Response: {attempt['response'][:100]}...")
+# Process each attempt with deep analysis
+results = []
+previous_responses = []
+
+for attempt in attempts_data:
+    # Handle both dict and AttemptData objects
+    if hasattr(attempt, 'attempt'):
+        attempt_num = attempt.attempt
+        response_text = attempt.response
+        mode = attempt.mode
+    else:
+        attempt_num = attempt.get('attempt', 1)
+        response_text = attempt.get('response', '')
+        mode = attempt.get('mode', 'text')
+    
+    print(f"\n📝 Analyzing Attempt {attempt_num}...")
+    print(f"   Response: {response_text[:100]}...")
+    
+    # Build deep analysis prompt
+    prompt = build_deep_analysis_prompt(
+        request.scenario_id,
+        response_text,
+        attempt_num,
+        len(attempts_data),
+        previous_responses
+    )
+    
+    # Call Gemini for deep analysis
+    gemini_result = call_gemini_api(prompt)
+    
+    if gemini_result and 'scores' in gemini_result:
+        print("✅ Using Gemini deep analysis")
+        result = {
+            'attempt': attempt_num,
+            'mode': mode,
+            'response': response_text,
+            'scores': gemini_result.get('scores', {}),
+            'what_you_meant': gemini_result.get('what_you_meant', ''),
+            'what_you_said': gemini_result.get('what_you_said', ''),
+            'what_landed': gemini_result.get('what_landed', ''),
+            'what_got_lost': gemini_result.get('what_got_lost', ''),
+            'the_unspoken_gap': gemini_result.get('the_unspoken_gap', ''),
+            'why_it_matters': gemini_result.get('why_it_matters', ''),
+            'one_thing_to_change': gemini_result.get('one_thing_to_change', ''),
+            'behavioral_evidence': gemini_result.get('behavioral_evidence', []),
+            'patterns_detected': gemini_result.get('patterns_detected', []),
+            'better_version': gemini_result.get('better_version', ''),
+            'why_better': gemini_result.get('why_better', [])
+        }
+    else:
+        print("⚠️ Using fallback analysis")
+        mock = generate_mock_deep_analysis(response_text, request.scenario_id)
+        result = {
+            'attempt': attempt_num,
+            'mode': mode,
+            'response': response_text,
+            'scores': mock.get('scores', {}),
+            'what_you_meant': mock.get('what_you_meant', ''),
+            'what_you_said': mock.get('what_you_said', ''),
+            'what_landed': mock.get('what_landed', ''),
+            'what_got_lost': mock.get('what_got_lost', ''),
+            'the_unspoken_gap': mock.get('the_unspoken_gap', ''),
+            'why_it_matters': mock.get('why_it_matters', ''),
+            'one_thing_to_change': mock.get('one_thing_to_change', ''),
+            'behavioral_evidence': mock.get('behavioral_evidence', []),
+            'patterns_detected': mock.get('patterns_detected', []),
+            'better_version': mock.get('better_version', ''),
+            'why_better': mock.get('why_better', [])
+        }
+    
+    results.append(result)
+    previous_responses.append({
+        'attempt': attempt_num,
+        'response': response_text
+    })
             
             # Build deep analysis prompt
             prompt = build_deep_analysis_prompt(

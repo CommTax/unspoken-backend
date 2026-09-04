@@ -1,3 +1,5 @@
+# This file makes the models directory a Python package
+from .schemas import *
 from app.models.user import UserCreate, UserResponse
 from app.models.session import SessionCreate, SessionResponse
 from app.models.question import QuestionResponse

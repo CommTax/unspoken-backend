@@ -1,8 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 from dotenv import load_dotenv
 import os
 import asyncpg
@@ -31,10 +29,9 @@ app = FastAPI(
 )
 
 # ============================================================
-# CORS MIDDLEWARE - CORRECTED
+# CORS MIDDLEWARE
 # ============================================================
 
-# Add CORS middleware directly
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -43,7 +40,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:5500",
         "http://127.0.0.1:5500",
-        "*"  # Allow all for testing
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -143,38 +140,16 @@ class PersonaAssessmentRequest(BaseModel):
 class AttemptData(BaseModel):
     attempt: int
     response: str
-    mode: str  # 'voice' or 'text'
-
-
-class AnalysisDimension(BaseModel):
-    name: str
-    description: str
-
-
-class FeedbackStyle(BaseModel):
-    tone: str
-    format: str
-    priority: str
-
-
-class CoachingInstructions(BaseModel):
-    analysis_dimensions: Optional[List[AnalysisDimension]] = None
-    feedback_style: Optional[FeedbackStyle] = None
-    better_version_instructions: Optional[List[str]] = None
-    why_it_works_instructions: Optional[List[str]] = None
-    user_context: Optional[Dict[str, Any]] = None
+    mode: str
 
 
 class CommunicationRequest(BaseModel):
     scenario_id: int
     attempts: Optional[List[AttemptData]] = None
-    scenario_context: Optional[str] = None
-    scenario_question: Optional[str] = None
     response: Optional[str] = None
     attempt: Optional[int] = None
     mode: Optional[str] = None
     previous_attempts: Optional[List[Dict[str, Any]]] = None
-    coaching_instructions: Optional[CoachingInstructions] = None
 
 
 # ============================================================
@@ -400,91 +375,73 @@ async def get_competency_writeups(conn, competency_scores):
 
 
 # ============================================================
-# COMMUNICATION ANALYSIS - GEMINI FUNCTIONS
+# DEEP COMMUNICATION ANALYSIS - AI ANALYST
 # ============================================================
 
-def build_full_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_scores: list = None, coaching_instructions: CoachingInstructions = None):
+def build_deep_analysis_prompt(scenario_id: int, response_text: str, attempt: int, total_attempts: int, previous_responses: list = None):
+    """Build the deep analysis prompt for the AI Analyst."""
+    
     scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
     
-    prompt = f"""
-You are a world-class communication coach. Analyze the user's response to this scenario:
+    prompt = f"""You are The Unspoken AI Analyst - a world-class communication coach with deep expertise in behavioral psychology and interpersonal dynamics.
 
-SCENARIO CONTEXT: {scenario['context']}
+Analyze this communication scenario in depth:
+
+SCENARIO: {scenario['context']}
 QUESTION: {scenario['question']}
 
-USER'S RESPONSE: {response_text}
+USER'S RESPONSE (Attempt {attempt} of {total_attempts}):
+"{response_text}"
 
-This is attempt {attempt} of {total_attempts}.
-"""
+{"PREVIOUS ATTEMPTS: " + str(previous_responses) if previous_responses else ""}
 
-    if previous_scores and len(previous_scores) > 0:
-        prompt += f"\nPREVIOUS ATTEMPTS SCORES: {json.dumps(previous_scores)}"
-        prompt += "\nCompare this attempt to the previous ones. Note improvement or decline."
+Provide a comprehensive analysis in the following JSON format:
 
-    if coaching_instructions:
-        prompt += "\n\nCOACHING INSTRUCTIONS:"
-        
-        if coaching_instructions.analysis_dimensions:
-            prompt += "\n\nAnalyze these dimensions:"
-            for dim in coaching_instructions.analysis_dimensions:
-                prompt += f"\n- {dim.name.upper()}: {dim.description}"
-        
-        if coaching_instructions.feedback_style:
-            prompt += f"\n\nFEEDBACK STYLE:"
-            prompt += f"\n- Tone: {coaching_instructions.feedback_style.tone}"
-            prompt += f"\n- Format: {coaching_instructions.feedback_style.format}"
-            prompt += f"\n- Priority: {coaching_instructions.feedback_style.priority}"
-        
-        if coaching_instructions.better_version_instructions:
-            prompt += "\n\nBETTER VERSION INSTRUCTIONS:"
-            for instruction in coaching_instructions.better_version_instructions:
-                prompt += f"\n- {instruction}"
-        
-        if coaching_instructions.why_it_works_instructions:
-            prompt += "\n\nWHY IT WORKS INSTRUCTIONS:"
-            for instruction in coaching_instructions.why_it_works_instructions:
-                prompt += f"\n- {instruction}"
-
-    prompt += """
-
-Now provide your analysis in this exact JSON format:
-
-{
-  "scores": {
-    "clarity": 75,
-    "precision": 70,
-    "structure": 65,
-    "impact": 80,
-    "influence": 68
-  },
-  "feedback": [
-    "⚠️ Unclear — Your main point isn't obvious. State your core message upfront.",
-    "⚠️ Vague — Use specific numbers, dates, or concrete examples.",
-    "⚠️ Scattered — Try: Context → Problem → Solution → Ask.",
-    "⚠️ Forgettable — What's the one thing you want them to remember?",
-    "⚠️ Uncompelling — Add a clear call to action."
+{{
+  "scores": {{
+    "clarity": 0-100,
+    "precision": 0-100,
+    "structure": 0-100,
+    "impact": 0-100,
+    "influence": 0-100
+  }},
+  
+  "what_you_meant": "What the user likely intended to communicate (the core message they were trying to convey)",
+  
+  "what_you_said": "What the user actually said (the literal words and their surface meaning)",
+  
+  "what_landed": "What the listener likely heard and experienced (the perceived meaning, emotional impact, and takeaway)",
+  
+  "what_got_lost": "What the user intended that didn't get communicated effectively (nuance, subtext, credibility, emotion, etc.)",
+  
+  "the_unspoken_gap": "The gap between what was meant and what landed - why this gap exists and what it reveals",
+  
+  "why_it_matters": "Why this gap matters in the context of the conversation - the consequences and risks",
+  
+  "one_thing_to_change": "The single most impactful change the user should make in their communication",
+  
+  "behavioral_evidence": [
+    "Specific behavioral observations from the response that support the analysis"
   ],
-  "betterVersion": "Based on the feedback, here is a rewritten version of their response that addresses the issues identified. Make it natural and maintain their authentic voice while applying the coaching feedback.",
-  "whyItWorks": [
-    "Clarity: States the main point immediately",
-    "Structure: Follows a logical flow: Context → Action → Ask",
-    "Influence: Ends with a clear, actionable question",
-    "Precision: Uses specific, concrete language"
+  
+  "patterns_detected": [
+    "Patterns in the user's communication style revealed by this response"
+  ],
+  
+  "better_version": "A rewritten version of the response that bridges the unspoken gap and demonstrates the 'one thing to change'",
+  
+  "why_better": [
+    "Explanation of why the better version works and how it bridges the gap"
   ]
-}
+}}
 
-CRITICAL: The 'betterVersion' must be a complete rewrite of their response that:
-1. Addresses all the feedback provided
-2. Maintains their authentic voice and style
-3. Shows a clear improvement over the original
-4. Is practical and immediately usable
+Return ONLY valid JSON. Do not include any other text or explanation."""
 
-RETURN ONLY VALID JSON. Do not include any other text or explanation.
-"""
     return prompt
 
 
 def call_gemini_api(prompt: str):
+    """Call Gemini API with the prompt."""
     try:
         if not GEMINI_API_KEY or not model:
             print("⚠️ Gemini not available - API key or model missing")
@@ -497,6 +454,7 @@ def call_gemini_api(prompt: str):
         text = response.text
         print(f"📝 Raw response preview: {text[:200]}...")
         
+        # Try to extract JSON
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
@@ -504,6 +462,14 @@ def call_gemini_api(prompt: str):
             return result
         else:
             print(f"⚠️ No JSON found in response")
+            if '```json' in text:
+                json_text = text.split('```json')[1].split('```')[0].strip()
+                try:
+                    result = json.loads(json_text)
+                    print("✅ Extracted JSON from markdown")
+                    return result
+                except:
+                    pass
             return None
             
     except Exception as e:
@@ -513,106 +479,121 @@ def call_gemini_api(prompt: str):
         return None
 
 
-def generate_enhanced_mock_result(text: str, scenario_id: int = 0):
+def generate_mock_deep_analysis(text: str, scenario_id: int = 0):
+    """Generate a mock deep analysis for fallback."""
+    
+    scenario = SCENARIOS[scenario_id] if scenario_id < len(SCENARIOS) else SCENARIOS[0]
+    
+    # Determine basic quality indicators
     word_count = len(text.split())
-    has_structure = bool(re.search(r'first|second|finally|next|then|firstly|secondly', text, re.IGNORECASE))
-    has_clear_ask = bool(re.search(r'\?|please|recommend|suggest|propose|request', text, re.IGNORECASE))
     has_numbers = bool(re.search(r'\d', text))
+    has_clear_ask = bool(re.search(r'\?|please|recommend|suggest|propose|request', text, re.IGNORECASE))
     has_confidence = bool(re.search(r'I believe|I know|I\'m confident|I\'m sure|I think', text, re.IGNORECASE))
     has_impact = bool(re.search(r'deliver|achieve|result|outcome|success|goal', text, re.IGNORECASE))
-
+    
     import random
     random.seed(hash(text) % 10000)
     
     scores = {
-        'clarity': min(92, max(35, 55 + (20 if has_clear_ask else 0) + (8 if word_count > 15 else 0) + random.randint(-7, 7))),
-        'precision': min(92, max(30, 45 + (25 if has_numbers else 0) + (8 if word_count > 20 else 0) + random.randint(-7, 7))),
-        'structure': min(92, max(25, 35 + (30 if has_structure else 0) + (8 if word_count > 20 else 0) + random.randint(-7, 7))),
-        'impact': min(92, max(30, 45 + (20 if has_impact else 0) + (12 if has_clear_ask else 0) + random.randint(-7, 7))),
+        'clarity': min(92, max(35, 45 + (20 if has_clear_ask else 0) + (8 if word_count > 15 else 0) + random.randint(-7, 7))),
+        'precision': min(92, max(30, 40 + (25 if has_numbers else 0) + (8 if word_count > 20 else 0) + random.randint(-7, 7))),
+        'structure': min(92, max(25, 35 + (30 if has_clear_ask else 0) + random.randint(-7, 7))),
+        'impact': min(92, max(30, 40 + (20 if has_impact else 0) + (12 if has_clear_ask else 0) + random.randint(-7, 7))),
         'influence': min(92, max(25, 35 + (22 if has_confidence else 0) + (18 if has_clear_ask else 0) + random.randint(-7, 7)))
     }
     
-    feedback = []
-    if scores['clarity'] < 65:
-        feedback.append("⚠️ Unclear — Your main point isn't obvious. State your core message upfront.")
-    elif scores['clarity'] < 80:
-        feedback.append("🟡 Moderately Clear — Your point is there, but could be sharper.")
+    # Generate meaningful analysis based on scenario
+    if scenario_id == 0:  # Deadline
+        analysis = {
+            "what_you_meant": "You wanted to explain the deadline situation and show you're taking responsibility",
+            "what_you_said": "You mentioned the deadline issue but didn't provide enough context or a clear plan",
+            "what_landed": "The listener likely heard uncertainty and lack of a concrete solution",
+            "what_got_lost": "Your confidence, specific plan, and accountability got lost",
+            "the_unspoken_gap": "Between taking responsibility and showing you have it under control",
+            "why_it_matters": "This affects trust and confidence in your ability to deliver",
+            "one_thing_to_change": "Start with the solution, not the problem",
+            "behavioral_evidence": [
+                "You mention the problem but don't lead with a solution",
+                "Vague timeline references instead of specific dates",
+                "No mention of lessons learned or prevention"
+            ],
+            "patterns_detected": [
+                "Tendency to explain rather than solve",
+                "Under-communicating accountability",
+                "Missing action-oriented language"
+            ]
+        }
+    elif scenario_id == 4:  # Interview
+        analysis = {
+            "what_you_meant": "You wanted to present yourself as a capable, enthusiastic candidate",
+            "what_you_said": "You mentioned your experience but the message was scattered and unclear",
+            "what_landed": "The interviewer likely heard uncertainty and lack of clarity",
+            "what_got_lost": "Your specific achievements, passion, and value proposition got lost",
+            "the_unspoken_gap": "Between having potential and communicating it effectively",
+            "why_it_matters": "This is your only chance to make a first impression",
+            "one_thing_to_change": "Structure: Who you are → What you've done → Why you're a fit",
+            "behavioral_evidence": [
+                "No clear opening statement about who you are",
+                "Vague descriptions of experience",
+                "No closing statement about why you want the role"
+            ],
+            "patterns_detected": [
+                "Under-communicating achievements",
+                "Lack of storytelling structure",
+                "Missing enthusiasm indicators"
+            ]
+        }
     else:
-        feedback.append("✅ Clear — Your main point comes through effectively.")
-    
-    if scores['precision'] < 65:
-        feedback.append("⚠️ Vague — Use specific numbers, dates, or concrete examples.")
-    elif scores['precision'] < 80:
-        feedback.append("🟡 Somewhat Precise — Add more specific details.")
-    else:
-        feedback.append("✅ Precise — Good use of specific details.")
-    
-    if scores['structure'] < 65:
-        feedback.append("⚠️ Scattered — Try: Context → Problem → Solution → Ask.")
-    elif scores['structure'] < 80:
-        feedback.append("🟡 Partly Structured — Could be more organized.")
-    else:
-        feedback.append("✅ Structured — Clear logical flow.")
-    
-    if scores['impact'] < 65:
-        feedback.append("⚠️ Forgettable — What's the one thing you want them to remember?")
-    elif scores['impact'] < 80:
-        feedback.append("🟡 Moderate Impact — End with a strong closing statement.")
-    else:
-        feedback.append("✅ Impactful — Memorable and leaves a strong impression.")
-    
-    if scores['influence'] < 65:
-        feedback.append("⚠️ Uncompelling — Add a clear call to action.")
-    elif scores['influence'] < 80:
-        feedback.append("🟡 Somewhat Compelling — Strengthen your ask.")
-    else:
-        feedback.append("✅ Influential — Compelling case with clear action.")
-    
-    better_version = text
-    
-    if scores['clarity'] < 65:
-        better_version = "I want to be clear: " + better_version
-    
-    if scores['structure'] < 65:
-        if not has_structure:
-            sentences = better_version.split('. ')
-            if len(sentences) > 1:
-                better_version = sentences[0] + '. First, ' + '. '.join(sentences[1:])
-    
-    if scores['precision'] < 65 and not has_numbers:
-        better_version += " To give you a more specific picture, I can provide concrete examples and data."
-    
-    if scores['influence'] < 65 and not has_clear_ask:
-        better_version += " Does that approach work for you? I'd value your feedback."
-    
-    if scores['impact'] < 65:
-        better_version += " This is the key point I want you to remember."
-    
-    why_it_works = [
-        "Clarity: States the main point clearly and directly",
-        "Structure: Organized with a logical flow",
-        "Influence: Includes a specific call to action",
-        "Precision: Uses concrete language and specific details"
-    ]
-    
-    if scores['clarity'] < 65:
-        why_it_works[0] = "Clarity: Opens with a clear statement of purpose, making the intention immediately understood"
-    if scores['structure'] < 65:
-        why_it_works[1] = "Structure: Uses transitional phrases to guide the listener through the response"
-    if scores['precision'] < 65:
-        why_it_works[3] = "Precision: Includes specific details and concrete examples to support the message"
-    if scores['influence'] < 65:
-        why_it_works[2] = "Influence: Ends with a specific, actionable question that moves the conversation forward"
+        analysis = {
+            "what_you_meant": "You wanted to communicate your message effectively",
+            "what_you_said": "The message was communicated but could be more impactful",
+            "what_landed": "The listener may have missed the full meaning",
+            "what_got_lost": "Some nuance and impact got lost in the delivery",
+            "the_unspoken_gap": "Between your intention and the perceived message",
+            "why_it_matters": "This affects how your message is received and acted upon",
+            "one_thing_to_change": "Make your core message more prominent",
+            "behavioral_evidence": [
+                "Your main point could be stated more directly",
+                "Supporting details could be more specific",
+                "The call to action could be clearer"
+            ],
+            "patterns_detected": [
+                "Good intent but delivery needs refinement",
+                "Potential to be more impactful"
+            ]
+        }
     
     return {
         'scores': scores,
-        'feedback': feedback,
-        'betterVersion': better_version,
-        'whyItWorks': why_it_works
+        **analysis,
+        'better_version': generate_better_version(text, scenario_id),
+        'why_better': [
+            "Clear structure makes it easy to follow",
+            "Specific details add credibility",
+            "Strong closing leaves a lasting impression"
+        ]
     }
 
 
-def determine_persona_from_attempts(attempts_data: list):
+def generate_better_version(text: str, scenario_id: int):
+    """Generate an improved version based on the scenario."""
+    
+    better_versions = {
+        0: "The deadline delay was caused by an unexpected technical dependency. I've already identified the bottleneck and we're implementing a solution. I'll have a detailed recovery plan ready within 30 minutes with a revised timeline. We're committed to delivering quality work.",
+        1: "I understand your budget concerns. Let me show you the ROI - our solution typically saves 30% on operational costs in year one. We also offer flexible payment options and a phased rollout. Would you like me to walk you through the specific savings for your team?",
+        2: "I believe I've earned this promotion. Over the past year, I've exceeded targets by 20%, led two successful product launches, and mentored three team members. I'm ready to take on more strategic ownership and contribute at a higher level.",
+        3: "I'd like to discuss your recent performance constructively. I've noticed some quality issues and missed deadlines. I know you're capable of great work - what support do you need from me to get back on track? Let's work together to improve.",
+        4: "I'm a passionate problem-solver with strong SQL skills and a drive to learn. During my studies, I completed several database projects and helped my team implement a data analytics solution. I'm excited to bring this energy to your team and grow as a professional."
+    }
+    
+    return better_versions.get(scenario_id, better_versions[4])
+
+
+def determine_emerging_persona(attempts_data: list):
+    """Determine the emerging persona based on all attempts."""
+    if len(attempts_data) < 3:
+        return None
+    
     dims = ['clarity', 'precision', 'structure', 'impact', 'influence']
     totals = {d: 0 for d in dims}
     
@@ -1025,40 +1006,41 @@ async def get_paid_persona_report(user_id: str):
 
 
 # ============================================================
-# COMMUNICATION ANALYSIS ENDPOINT
+# DEEP COMMUNICATION ANALYSIS ENDPOINT - THE UNSPOKEN ANALYST
 # ============================================================
 
 @app.post("/api/communication/analyze")
 async def analyze_communication(request: CommunicationRequest):
     """
-    Analyze communication attempts using Gemini AI.
+    Deep communication analysis using the Unspoken AI Analyst.
+    Provides complete breakdown: what you meant, what you said, what landed, what got lost, etc.
     """
     try:
-        print("=" * 50)
-        print("📝 COMMUNICATION ANALYSIS")
+        print("=" * 60)
+        print("🧠 THE UNSPOKEN AI ANALYST")
         print(f"Scenario: {request.scenario_id}")
         
-        # --- EXTRACT ATTEMPTS FROM PAYLOAD ---
+        # --- EXTRACT ATTEMPTS ---
         attempts_data = []
         
         if request.attempts:
             attempts_data = request.attempts
-            print(f"✅ Using attempts array format: {len(attempts_data)} attempts")
+            print(f"✅ Using attempts array: {len(attempts_data)} attempts")
         elif request.response:
             print("✅ Using single attempt format")
-            attempts_data = [AttemptData(
-                attempt=request.attempt or 1,
-                response=request.response,
-                mode=request.mode or 'text'
-            )]
+            attempts_data = [{
+                'attempt': request.attempt or 1,
+                'response': request.response,
+                'mode': request.mode or 'text'
+            }]
             
             if request.previous_attempts:
                 for prev in request.previous_attempts:
-                    attempts_data.insert(0, AttemptData(
-                        attempt=prev.get('attempt', 1),
-                        response=prev.get('response', ''),
-                        mode=prev.get('mode', 'text')
-                    ))
+                    attempts_data.insert(0, {
+                        'attempt': prev.get('attempt', 1),
+                        'response': prev.get('response', ''),
+                        'mode': prev.get('mode', 'text')
+                    })
                 print(f"✅ Added {len(request.previous_attempts)} previous attempts")
         else:
             return {"success": False, "message": "No attempt data provided"}
@@ -1067,70 +1049,95 @@ async def analyze_communication(request: CommunicationRequest):
         if len(attempts_data) > 3:
             return {
                 "success": False, 
-                "message": "Maximum 3 attempts allowed per scenario. Please start a new scenario."
+                "message": "Maximum 3 attempts allowed per scenario."
             }
         
         print(f"Total attempts: {len(attempts_data)}")
-        if request.coaching_instructions:
-            print("✅ Coaching instructions provided")
-        print("=" * 50)
+        print("=" * 60)
 
         scenario = SCENARIOS[request.scenario_id] if request.scenario_id < len(SCENARIOS) else SCENARIOS[0]
         
-        # Process each attempt
+        # Process each attempt with deep analysis
         results = []
-        previous_scores = []
+        previous_responses = []
         
         for attempt in attempts_data:
-            prompt = build_full_analysis_prompt(
+            print(f"\n📝 Analyzing Attempt {attempt['attempt']}...")
+            print(f"   Response: {attempt['response'][:100]}...")
+            
+            # Build deep analysis prompt
+            prompt = build_deep_analysis_prompt(
                 request.scenario_id,
-                attempt.response,
-                attempt.attempt,
+                attempt['response'],
+                attempt['attempt'],
                 len(attempts_data),
-                previous_scores,
-                request.coaching_instructions
+                previous_responses
             )
             
+            # Call Gemini for deep analysis
             gemini_result = call_gemini_api(prompt)
             
             if gemini_result and 'scores' in gemini_result:
+                print("✅ Using Gemini deep analysis")
                 result = {
-                    'attempt': attempt.attempt,
-                    'mode': attempt.mode,
-                    'response': attempt.response,
-                    'scores': gemini_result['scores'],
-                    'feedback': gemini_result.get('feedback', []),
-                    'betterVersion': gemini_result.get('betterVersion', ''),
-                    'whyItWorks': gemini_result.get('whyItWorks', [])
+                    'attempt': attempt['attempt'],
+                    'mode': attempt['mode'],
+                    'response': attempt['response'],
+                    'scores': gemini_result.get('scores', {}),
+                    'what_you_meant': gemini_result.get('what_you_meant', ''),
+                    'what_you_said': gemini_result.get('what_you_said', ''),
+                    'what_landed': gemini_result.get('what_landed', ''),
+                    'what_got_lost': gemini_result.get('what_got_lost', ''),
+                    'the_unspoken_gap': gemini_result.get('the_unspoken_gap', ''),
+                    'why_it_matters': gemini_result.get('why_it_matters', ''),
+                    'one_thing_to_change': gemini_result.get('one_thing_to_change', ''),
+                    'behavioral_evidence': gemini_result.get('behavioral_evidence', []),
+                    'patterns_detected': gemini_result.get('patterns_detected', []),
+                    'better_version': gemini_result.get('better_version', ''),
+                    'why_better': gemini_result.get('why_better', [])
                 }
             else:
-                mock = generate_enhanced_mock_result(attempt.response, request.scenario_id)
+                print("⚠️ Using fallback analysis")
+                mock = generate_mock_deep_analysis(attempt['response'], request.scenario_id)
                 result = {
-                    'attempt': attempt.attempt,
-                    'mode': attempt.mode,
-                    'response': attempt.response,
-                    'scores': mock['scores'],
-                    'feedback': mock['feedback'],
-                    'betterVersion': mock['betterVersion'],
-                    'whyItWorks': mock['whyItWorks']
+                    'attempt': attempt['attempt'],
+                    'mode': attempt['mode'],
+                    'response': attempt['response'],
+                    'scores': mock.get('scores', {}),
+                    'what_you_meant': mock.get('what_you_meant', ''),
+                    'what_you_said': mock.get('what_you_said', ''),
+                    'what_landed': mock.get('what_landed', ''),
+                    'what_got_lost': mock.get('what_got_lost', ''),
+                    'the_unspoken_gap': mock.get('the_unspoken_gap', ''),
+                    'why_it_matters': mock.get('why_it_matters', ''),
+                    'one_thing_to_change': mock.get('one_thing_to_change', ''),
+                    'behavioral_evidence': mock.get('behavioral_evidence', []),
+                    'patterns_detected': mock.get('patterns_detected', []),
+                    'better_version': mock.get('better_version', ''),
+                    'why_better': mock.get('why_better', [])
                 }
             
             results.append(result)
-            previous_scores.append(result['scores'])
+            previous_responses.append({
+                'attempt': attempt['attempt'],
+                'response': attempt['response']
+            })
         
         # Calculate overall scores
         dims = ['clarity', 'precision', 'structure', 'impact', 'influence']
         overall_scores = {d: 0 for d in dims}
         for result in results:
+            scores = result.get('scores', {})
             for d in dims:
-                overall_scores[d] += result['scores'][d]
+                overall_scores[d] += scores.get(d, 50)
         
         for d in dims:
             overall_scores[d] = round(overall_scores[d] / len(results), 2)
         
-        best_attempt = max(results, key=lambda x: sum(x['scores'].values()) / 5)
+        best_attempt = max(results, key=lambda x: sum(x.get('scores', {}).values()) / 5 if x.get('scores') else 0)
         is_complete = len(results) >= 3
         
+        # Build response
         response_data = {
             'success': True,
             'is_complete': is_complete,
@@ -1142,26 +1149,30 @@ async def analyze_communication(request: CommunicationRequest):
                 'context': scenario['context'],
                 'question': scenario['question']
             },
-            'attempts_remaining': max(0, 3 - len(results))
+            'attempts_remaining': max(0, 3 - len(results)),
+            'message': f'Analysis complete for attempt {len(results)} of 3'
         }
         
+        # If 3 attempts complete, determine emerging persona
         if is_complete:
-            persona_result = determine_persona_from_attempts(results)
-            response_data['persona'] = {
-                'name': persona_result['persona']['name'],
-                'description': persona_result['persona']['description'],
-                'strength_label': persona_result['persona']['strength_label'],
-                'strength_desc': persona_result['persona']['strength_desc'],
-                'growth_label': persona_result['persona']['growth_label'],
-                'growth_desc': persona_result['persona']['growth_desc'],
-                'strongest_dimension': persona_result['strongest'],
-                'weakest_dimension': persona_result['weakest']
-            }
-            response_data['message'] = 'All 3 attempts analyzed. Persona revealed!'
-        else:
-            response_data['message'] = f'Analysis complete for attempt {len(results)} of 3'
+            persona_result = determine_emerging_persona(results)
+            if persona_result:
+                response_data['emerging_persona'] = {
+                    'name': persona_result['persona']['name'],
+                    'description': persona_result['persona']['description'],
+                    'strength_label': persona_result['persona']['strength_label'],
+                    'strength_desc': persona_result['persona']['strength_desc'],
+                    'growth_label': persona_result['persona']['growth_label'],
+                    'growth_desc': persona_result['persona']['growth_desc'],
+                    'strongest_dimension': persona_result['strongest'],
+                    'weakest_dimension': persona_result['weakest']
+                }
+                response_data['message'] = 'All 3 attempts analyzed. Emerging persona revealed!'
+                response_data['prompt_for_paid'] = True
+                response_data['paid_price'] = '₹499'
+                response_data['paid_message'] = "You've only seen one conversation. Unlock your full Unspoken Profile for ₹499."
         
-        print(f"✅ Analysis complete. Complete: {is_complete}")
+        print(f"\n✅ Analysis complete. Complete: {is_complete}")
         return response_data
         
     except Exception as e:
@@ -1231,10 +1242,6 @@ async def health_check():
     }
 
 
-# ============================================================
-# ROOT ENDPOINT
-# ============================================================
-
 @app.get("/")
 async def root():
     return {
@@ -1245,7 +1252,7 @@ async def root():
             "GET /api/leads - Get all leads",
             "POST /api/persona/paid-assess - Paid Persona Assessment",
             "GET /api/persona/paid-report/{user_id} - Get Paid Persona Report",
-            "POST /api/communication/analyze - Analyze communication attempts (max 3)",
+            "POST /api/communication/analyze - Deep Communication Analysis (The Unspoken Analyst)",
             "GET /api/communication/scenarios - Get all scenarios",
             "GET /api/test-gemini - Test Gemini API connection",
             "GET /api/health - Health check"

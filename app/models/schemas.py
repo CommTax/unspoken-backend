@@ -1,34 +1,46 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional, List, Dict, Any
 
-class DimensionFeedback(BaseModel):
-    rating: str  # "Strong", "Good", "Needs Work", "Critical Gap"
-    feedback: str
+# ============================================================
+# LEAD MODELS
+# ============================================================
 
-class SpeechAnalytics(BaseModel):
-    words_per_minute: int
-    filler_words_per_minute: int
-    total_words: int
-    total_fillers: int
-    filler_word_list: List[str]
+class LeadCreate(BaseModel):
+    full_name: str
+    email: str
+    phone: Optional[str] = None
 
-class CommunicationAnalysis(BaseModel):
-    overall_comment: str
-    unspoken_value_score: int  # 0-100, calculated by Gemini
-    thinking: DimensionFeedback
-    structure: DimensionFeedback
-    clarity: DimensionFeedback
-    influence: DimensionFeedback
-    speech_analytics: SpeechAnalytics  # ✅ MUST HAVE THIS LINE
-    good_points: List[str]
-    areas_to_cover: List[str]
-    follow_up_questions: List[str]
+# ============================================================
+# USER MODELS
+# ============================================================
 
-class AnalyzeRequest(BaseModel):
-    transcript: str
-    context: Optional[str] = None
+class UserCreate(BaseModel):
+    full_name: str
+    email: str
+    phone: Optional[str] = None
 
-class AnalyzeResponse(BaseModel):
-    success: bool
-    analysis: Optional[CommunicationAnalysis] = None
-    error: Optional[str] = None
+# ============================================================
+# PERSONA ASSESSMENT MODELS
+# ============================================================
+
+class PersonaAssessmentRequest(BaseModel):
+    user_details: UserCreate
+    responses: List[dict]
+    type: str = 'paid'
+
+# ============================================================
+# COMMUNICATION ANALYSIS MODELS
+# ============================================================
+
+class AttemptData(BaseModel):
+    attempt: int
+    response: str
+    mode: str  # 'voice' or 'text'
+
+class CommunicationRequest(BaseModel):
+    scenario_id: int
+    attempts: Optional[List[AttemptData]] = None
+    response: Optional[str] = None
+    attempt: Optional[int] = None
+    mode: Optional[str] = None
+    previous_attempts: Optional[List[Dict[str, Any]]] = None

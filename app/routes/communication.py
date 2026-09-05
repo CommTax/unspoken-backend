@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
+from typing import List  # <-- ADD THIS IMPORT
 from app.models.schemas import (
     CommunicationRequest,
     PremiumCommunicationAnalysisRequest,

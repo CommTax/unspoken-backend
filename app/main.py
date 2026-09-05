@@ -27,7 +27,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:5500",
         "http://127.0.0.1:5500",
-        "*"
+        # ❌ REMOVED: "*" - can't use with allow_credentials=True
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -85,7 +85,7 @@ async def health_check():
     from app.services.gemini_client import GEMINI_API_KEY
     return {
         "status": "healthy",
-        "gemini_configured": bool(GEMINI_API_KEY),
+        "gemini_configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here"),
         "database_configured": bool(os.environ.get("DATABASE_URL")),
         "service": "Unspoken Backend",
         "version": "2.0.0",

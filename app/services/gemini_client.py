@@ -10,7 +10,7 @@ model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         print("✅ Gemini API configured successfully")
     except Exception as e:
         print(f"⚠️ Gemini API configuration error: {e}")

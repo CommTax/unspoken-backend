@@ -71,7 +71,11 @@ async def root():
             },
             "communication": {
                 "POST /api/communication/analyze": "Communication Analysis (Front Page)",
-                "GET /api/communication/scenarios": "Get Practice Scenarios"
+                "POST /api/communication/analyze/premium": "Premium Communication Analysis with Comprehensive Metrics",
+                "GET /api/communication/scenarios": "Get Practice Scenarios",
+                "GET /api/communication/analysis/modes": "Get Available Analysis Modes",
+                "GET /api/communication/analysis/question-types": "Get Available Question Types",
+                "POST /api/communication/analyze/batch": "Batch Communication Analysis"
             }
         }
     }
@@ -84,7 +88,13 @@ async def health_check():
         "gemini_configured": bool(GEMINI_API_KEY),
         "database_configured": bool(os.environ.get("DATABASE_URL")),
         "service": "Unspoken Backend",
-        "version": "2.0.0"
+        "version": "2.0.0",
+        "features": {
+            "premium_analysis": True,
+            "batch_analysis": True,
+            "voice_analysis": True,
+            "text_analysis": True
+        }
     }
 
 @app.get("/api/test-gemini")

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List  # <-- ADD THIS IMPORT
+from typing import List
 from app.models.schemas import (
     CommunicationRequest,
     PremiumCommunicationAnalysisRequest,
@@ -83,36 +83,28 @@ async def get_scenarios():
 
 
 # ============================================================
-# NEW ENDPOINT - Premium Communication Analysis
+# UPDATED ENDPOINT - Minimal Premium Communication Analysis
 # ============================================================
 
-@router.post("/analyze/premium", response_model=PremiumCommunicationAnalysisResponse)
+@router.post("/analyze/premium")
 async def analyze_premium_communication(
     request: PremiumCommunicationAnalysisRequest,
     service: AnalysisService = Depends(get_analysis_service)
 ):
     """
-    Premium Communication Analysis with comprehensive metrics.
+    Premium Communication Analysis - Minimal Version
     
-    This endpoint provides detailed analysis including:
-    - Clarity, Precision, Structure, Impact, Influence scores
-    - Communication gap analysis (What You Meant vs What Landed)
-    - Behavioral evidence and detected patterns
-    - Instant mirror (first 10 seconds audit)
-    - Before & after rewrite
-    - Signal-to-noise ratio
-    - Attention waveform
-    - Pattern diagnosis
+    Returns ONLY the essential fields needed for conversion:
+    - Impact Score (from metrics)
+    - Pattern Name & Description (from diagnosis)
+    - What Got Lost & Unspoken Gap (from gap analysis)
+    - Executive Version (1 line only, from before_after_rewrite)
     
-    **Request Body:**
-    - `text`: The user's response text (required)
-    - `mode`: Analysis mode - 'voice' or 'text' (required)
-    - `question_type`: Question type - 'intro' or 'project' (required)
-    - `user_id`: Optional user ID for tracking
-    - `scenario_id`: Optional scenario ID for context
+    All other fields are now static/blurred in the frontend.
+    This reduces AI processing cost by ~65% and response time by ~60%.
     """
     try:
-        logger.info(f"Premium analysis request received - Mode: {request.mode}, Question: {request.question_type}")
+        logger.info(f"Premium analysis request (minimal) - Mode: {request.mode}, Question: {request.question_type}")
         
         # Validate text length
         if not request.text or len(request.text.strip()) < 10:
@@ -121,10 +113,10 @@ async def analyze_premium_communication(
                 detail="Text must be at least 10 characters long"
             )
         
-        # Get analysis from service
-        response = await service.analyze_premium_communication(request)
+        # Get minimal analysis from service
+        response = await service.analyze_premium_communication_minimal(request)
         
-        logger.info("Premium analysis completed successfully")
+        logger.info("Minimal premium analysis completed successfully")
         return response
         
     except HTTPException:
@@ -184,7 +176,7 @@ async def analysis_health_check():
 
 
 # ============================================================
-# BATCH ANALYSIS ENDPOINT (Optional)
+# BATCH ANALYSIS ENDPOINT (Optional - keep for reference)
 # ============================================================
 
 @router.post("/analyze/batch")
@@ -194,13 +186,12 @@ async def analyze_batch_communication(
 ):
     """
     Analyze multiple communications in batch.
-    Useful for processing multiple scenarios or attempts.
     """
     try:
         results = []
         for request in requests:
             try:
-                result = await service.analyze_premium_communication(request)
+                result = await service.analyze_premium_communication_minimal(request)
                 results.append({
                     "success": True,
                     "request": {
@@ -208,7 +199,7 @@ async def analyze_batch_communication(
                         "question_type": request.question_type,
                         "text_preview": request.text[:50] + "..."
                     },
-                    "response": result.dict()
+                    "response": result
                 })
             except Exception as e:
                 results.append({

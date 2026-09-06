@@ -415,12 +415,28 @@ async def test_groq_api():
         }
     
     try:
-        # Simple test transcription
+        # Create a simple test - use a small audio file instead of text
+        # Generate a simple WAV file (1 second of silence)
+        import wave
+        import io
+        
+        # Create a minimal WAV file
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b'\x00\x00' * 16000)  # 1 second of silence
+        
+        wav_data = wav_io.getvalue()
+        
+        # Test transcription with the WAV file
         test_response = groq_client.audio.transcriptions.create(
             model="whisper-large-v3",
-            file=("test.txt", b"This is a test."),
+            file=("test.wav", wav_data),
             response_format="text"
         )
+        
         return {
             "success": True,
             "message": "Groq API is working!",
@@ -433,7 +449,6 @@ async def test_groq_api():
             "message": f"Groq API error: {str(e)}",
             "config": config_status
         }
-
 
 # ============================================================
 # EXPORT ROUTER

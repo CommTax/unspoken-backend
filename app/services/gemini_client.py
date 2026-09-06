@@ -1,84 +1,54 @@
-import os
-import json
-import re
-import google.generativeai as genai
-
-# Initialize Gemini
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-model = None
-
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-3.6-flash')
-        print("✅ Gemini API configured successfully")
-    except Exception as e:
-        print(f"⚠️ Gemini API configuration error: {e}")
-
-def call_gemini_api(prompt: str):
-    """Call Gemini API with the prompt."""
-    try:
-        if not GEMINI_API_KEY or not model:
-            print("⚠️ Gemini not available - API key or model missing")
-            return None
-        
-        print("🔄 Calling Gemini API...")
-        response = model.generate_content(prompt)
-        print(f"✅ Gemini API response received: {len(response.text)} chars")
-        
-        text = response.text
-        print(f"📝 Raw response preview: {text[:200]}...")
-        
-        # Try to extract JSON
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
-            print("✅ Successfully parsed JSON from Gemini")
-            return result
-        else:
-            if '```json' in text:
-                json_text = text.split('```json')[1].split('```')[0].strip()
-                try:
-                    result = json.loads(json_text)
-                    print("✅ Extracted JSON from markdown")
-                    return result
-                except:
-                    pass
-            return None
-            
-    except Exception as e:
-        print(f"❌ Gemini API Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-async def test_gemini_api():
-    """Test if Gemini API is working."""
-    config_status = {
-        "gemini_key_set": bool(GEMINI_API_KEY),
-        "model_initialized": bool(model),
-        "api_key_length": len(GEMINI_API_KEY) if GEMINI_API_KEY else 0
+// Test the full flow with longer timeout
+async function testFullFlow() {
+  const testText = "I am a senior program manager currently working with Wellness Limited and managing Food Project two of the matter to consumer for this and two of the mark for internal stakeholders which is our posting the one on the consumers side are distillation OPD services in India and they are launched occurs 4gbm channel the second project is on IBS which is also against to GTM";
+  
+  console.log('🚀 Testing with 45s timeout...');
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.log('⏰ Aborting after 45s');
+    controller.abort();
+  }, 45000);
+  
+  const startTime = Date.now();
+  
+  try {
+    const response = await fetch('https://unspoken-backend-yvbi.onrender.com/api/communication/analyze/premium', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: testText,
+        mode: 'voice',
+        question_type: 'intro'
+      }),
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    const endTime = Date.now();
+    console.log(`⏱️ Total time: ${(endTime - startTime) / 1000}s`);
+    
+    if (!response.ok) {
+      console.error('❌ HTTP Error:', response.status);
+      return;
     }
     
-    if not GEMINI_API_KEY or not model:
-        return {
-            "success": False,
-            "message": "Gemini not configured",
-            "config": config_status
-        }
+    const data = await response.json();
+    console.log('✅ Response:', data);
+    console.log('📊 Impact Score:', data?.metrics?.impact);
+    console.log('🧠 Pattern:', data?.diagnosis?.pattern_name);
+    console.log('💡 What Got Lost:', data?.gap?.what_got_lost);
+    console.log('✍️ Executive Version:', data?.before_after_rewrite?.executive_version);
     
-    try:
-        test_prompt = "Reply with exactly: 'Gemini is working correctly!'"
-        response = model.generate_content(test_prompt)
-        return {
-            "success": True,
-            "message": "Gemini API is working!",
-            "response": response.text,
-            "config": config_status
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Gemini API error: {str(e)}",
-            "config": config_status
-        }
+    return data;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.error('❌ Request aborted (timeout)');
+    } else {
+      console.error('❌ Error:', error);
+    }
+  }
+}
+
+testFullFlow();

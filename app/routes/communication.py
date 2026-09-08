@@ -153,7 +153,7 @@ async def get_question_types():
     return {
         "success": True,
         "question_types": [
-            {"value": "intro", "label": "Introduce Yourself", "prompt": "Tell me about yourself — your background, what you do, and what drives you professionally."},
+            {"value": "intro", "label": "Introduce Yourself", "prompt": "Tell me about yourself - your background, what you do, and what drives you professionally."},
             {"value": "project", "label": "Current Project", "prompt": "Tell me about a current project or initiative you're leading or involved in."}
         ]
     }

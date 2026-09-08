@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Response
+from typing import List, Optional
 from app.models.schemas import (
     CommunicationRequest,
     PremiumCommunicationAnalysisRequest,
@@ -10,6 +10,11 @@ from app.models.schemas import (
 from app.services.analysis_service import AnalysisService, get_analysis_service
 from app.utils.scenarios import SCENARIOS
 import logging
+import io
+import os
+import openai
+from tempfile import NamedTemporaryFile
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -231,26 +236,13 @@ async def analyze_batch_communication(
 # VOICE ANALYSIS ENDPOINT - Using Groq Whisper (FREE)
 # ============================================================
 
-from pydantic import BaseModel
-import base64
-import os
-import openai
-from tempfile import NamedTemporaryFile
-import json
-
-# Voice Request Model
-class VoiceAnalysisRequest(BaseModel):
-    audio_base64: str
-    mode: str = "voice"
-    question_type: str = "intro"
-    duration: int = 0
-
 # Initialize Groq client with your API key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 groq_client = None
 
 if GROQ_API_KEY:
     try:
+        import openai
         groq_client = openai.OpenAI(
             api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1"
@@ -261,110 +253,157 @@ if GROQ_API_KEY:
 else:
     print("⚠️ GROQ_API_KEY not set - voice transcription will use fallback")
 
+
+@router.options("/analyze/voice")
+async def options_voice():
+    """Handle CORS preflight for voice endpoint"""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "https://theunspoken.co.in",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+
 @router.post("/analyze/voice")
 async def analyze_voice(
-    request: VoiceAnalysisRequest,
+    audio: UploadFile = File(...),
+    question_type: str = Form("intro"),
+    mode: str = Form("voice"),
+    duration: int = Form(0),
     service: AnalysisService = Depends(get_analysis_service)
 ):
     """
     Analyze voice recording using Groq's free Whisper API.
     
     This endpoint:
-    1. Transcribes audio using Groq Whisper (free, high accuracy)
-    2. Analyzes the transcribed text using your AI
-    3. Returns the combined results
+    1. Receives audio as multipart/form-data
+    2. Transcribes audio using Groq Whisper (free, high accuracy)
+    3. Analyzes the transcribed text using your AI
+    4. Returns the combined results
     
     Works on all devices including mobile!
     """
     try:
-        logger.info(f"🎤 Voice analysis request - Duration: {request.duration}s, Question: {request.question_type}")
+        logger.info(f"🎤 Voice analysis request - Duration: {duration}s, Question: {question_type}")
+        
+        # Log audio file details
+        logger.info(f"📁 Audio file: {audio.filename}, Content-Type: {audio.content_type}")
+        
+        # Read audio bytes
+        audio_bytes = await audio.read()
+        audio_size = len(audio_bytes)
+        logger.info(f"📊 Audio size: {audio_size} bytes")
+        
+        # Validate audio
+        if audio_size == 0:
+            logger.error("❌ Empty audio file received")
+            return {
+                "success": False,
+                "error": "No audio data received. Please try recording again."
+            }
+        
+        if audio_size > 25 * 1024 * 1024:  # 25MB limit
+            logger.error(f"❌ Audio too large: {audio_size} bytes")
+            return {
+                "success": False,
+                "error": "Audio file too large. Please record a shorter response (max 25MB)."
+            }
         
         # Check if Groq is configured
         if not GROQ_API_KEY or not groq_client:
-            logger.warning("⚠️ Groq API not configured, using fallback")
+            logger.warning("⚠️ Groq API not configured")
             return {
                 "success": False,
                 "error": "Voice transcription service not configured. Please try typing your response.",
                 "fallback_to_text": True
             }
         
-        # Decode base64 audio
-        try:
-            audio_bytes = base64.b64decode(request.audio_base64)
-            logger.info(f"✅ Audio decoded: {len(audio_bytes)} bytes")
-        except Exception as e:
-            logger.error(f"❌ Failed to decode audio: {e}")
-            return {
-                "success": False,
-                "error": "Invalid audio data. Please try again."
-            }
+        # Transcribe using Groq Whisper
+        logger.info("🔄 Sending to Groq Whisper for transcription...")
         
-        # Check audio size (Groq has limits)
-        if len(audio_bytes) > 25 * 1024 * 1024:  # 25MB limit
-            return {
-                "success": False,
-                "error": "Audio file too large. Please record a shorter response."
-            }
-        
-        # Save audio to temporary file (Groq accepts file uploads)
-        temp_file_path = None
         try:
-            with NamedTemporaryFile(suffix=".webm", delete=False) as temp_file:
-                temp_file.write(audio_bytes)
-                temp_file_path = temp_file.name
-                logger.info(f"📁 Audio saved to temp file: {temp_file_path}")
+            # Create a file-like object with proper filename
+            audio_file = io.BytesIO(audio_bytes)
             
-            # Transcribe using Groq Whisper
-            logger.info("🔄 Sending to Groq Whisper for transcription...")
+            # Determine file extension from content type
+            file_extension = ".webm"  # default
+            if audio.content_type:
+                if "webm" in audio.content_type:
+                    file_extension = ".webm"
+                elif "wav" in audio.content_type:
+                    file_extension = ".wav"
+                elif "mp3" in audio.content_type or "mpeg" in audio.content_type:
+                    file_extension = ".mp3"
+                elif "ogg" in audio.content_type:
+                    file_extension = ".ogg"
+                elif "flac" in audio.content_type:
+                    file_extension = ".flac"
+                elif "m4a" in audio.content_type or "mp4" in audio.content_type:
+                    file_extension = ".m4a"
             
-            with open(temp_file_path, "rb") as audio_file:
-                transcript_response = groq_client.audio.transcriptions.create(
-                    model="whisper-large-v3",
-                    file=audio_file,
-                    response_format="text",
-                    language="en"
-                )
+            # Set filename for Groq
+            audio_file.name = f"recording{file_extension}"
+            logger.info(f"📝 Sending file as: {audio_file.name}")
+            
+            # Transcribe
+            transcript_response = groq_client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=audio_file,
+                response_format="text",
+                language="en"
+            )
             
             # Extract transcribed text
             transcribed_text = transcript_response if isinstance(transcript_response, str) else transcript_response.text
+            
+            if not transcribed_text or len(transcribed_text.strip()) < 3:
+                logger.warning("⚠️ No clear speech detected in transcription")
+                return {
+                    "success": False,
+                    "error": "No clear speech detected. Please try speaking more clearly or type your response.",
+                    "transcribed_text": transcribed_text
+                }
             
             logger.info(f"✅ Transcription complete: {len(transcribed_text)} chars")
             logger.info(f"📝 Preview: {transcribed_text[:100]}...")
             
         except Exception as e:
-            logger.error(f"❌ Groq transcription error: {e}")
-            return {
-                "success": False,
-                "error": f"Transcription failed: {str(e)}",
-                "transcribed_text": None
-            }
-        finally:
-            # Clean up temp file
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.unlink(temp_file_path)
-                    logger.info(f"🗑️ Temp file cleaned up: {temp_file_path}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not delete temp file: {e}")
-        
-        # Check if we got valid transcription
-        if not transcribed_text or len(transcribed_text.strip()) < 3:
-            return {
-                "success": False,
-                "error": "No clear speech detected. Please try speaking more clearly or type your response.",
-                "transcribed_text": transcribed_text
-            }
+            error_msg = str(e)
+            logger.error(f"❌ Groq transcription error: {error_msg}")
+            
+            # Provide more specific error messages
+            if "invalid_media_file" in error_msg:
+                return {
+                    "success": False,
+                    "error": "The audio format was not recognized. Please try recording again with a different format or use text input.",
+                    "details": "Audio format not supported"
+                }
+            elif "file is too large" in error_msg:
+                return {
+                    "success": False,
+                    "error": "Audio file is too large. Please record a shorter response (max 25MB)."
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Transcription failed: {error_msg}",
+                    "transcribed_text": None
+                }
         
         # Now analyze the transcribed text using your existing analysis
         logger.info("🔍 Analyzing transcribed text with AI...")
         
         # Create a PremiumCommunicationAnalysisRequest from the transcribed text
-        # Import the needed models
         from app.models.schemas import PremiumCommunicationAnalysisRequest, QuestionType, AnalysisMode
         
         # Convert string to enum
-        mode_enum = AnalysisMode.VOICE if request.mode == "voice" else AnalysisMode.TEXT
-        question_type_enum = QuestionType.INTRO if request.question_type == "intro" else QuestionType.PROJECT
+        mode_enum = AnalysisMode.VOICE if mode == "voice" else AnalysisMode.TEXT
+        question_type_enum = QuestionType.INTRO if question_type == "intro" else QuestionType.PROJECT
         
         analysis_request = PremiumCommunicationAnalysisRequest(
             text=transcribed_text,
@@ -377,13 +416,15 @@ async def analyze_voice(
         
         logger.info("✅ Voice analysis complete")
         
-        # Return combined result with transcribed text
+        # Return combined result with transcribed text (NO audio bytes in response)
         return {
             "success": True,
             "transcribed_text": transcribed_text,
             **analysis_result
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Voice analysis error: {e}")
         import traceback
@@ -431,9 +472,12 @@ async def test_groq_api():
         wav_data = wav_io.getvalue()
         
         # Test transcription with the WAV file
+        test_file = io.BytesIO(wav_data)
+        test_file.name = "test.wav"
+        
         test_response = groq_client.audio.transcriptions.create(
             model="whisper-large-v3",
-            file=("test.wav", wav_data),
+            file=test_file,
             response_format="text"
         )
         
@@ -449,6 +493,7 @@ async def test_groq_api():
             "message": f"Groq API error: {str(e)}",
             "config": config_status
         }
+
 
 # ============================================================
 # EXPORT ROUTER

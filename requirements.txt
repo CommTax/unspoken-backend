@@ -10,3 +10,4 @@ asyncpg==0.29.0
 pip==26.2.1
 google-generativeai
 openai>=1.0.0
+python-multipart

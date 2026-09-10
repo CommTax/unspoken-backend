@@ -1,11 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Response
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from app.models.schemas import (
     CommunicationRequest,
     PremiumCommunicationAnalysisRequest,
-    PremiumCommunicationAnalysisResponse,
     AnalysisMode,
-    QuestionType
+    QuestionType,
 )
 from app.services.analysis_service import AnalysisService, get_analysis_service
 from app.utils.scenarios import SCENARIOS
@@ -13,12 +12,12 @@ import logging
 import io
 import os
 import openai
-from tempfile import NamedTemporaryFile
 import json
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
 
 # ============================================================
 # EXISTING ENDPOINT - Deep Communication Analysis
@@ -27,17 +26,17 @@ router = APIRouter()
 @router.post("/analyze")
 async def analyze_communication(request: CommunicationRequest):
     """
-    Communication Analysis for Front Page Testing.
-    This handles the voice/text practice and provides feedback.
+    Deep Communication Analysis for Front Page Testing.
+    Scenario-based, up to 3 attempts.
     """
     try:
         print("=" * 60)
         print("🧠 THE UNSPOKEN AI ANALYST")
         print(f"Scenario: {request.scenario_id}")
-        
+
         # Extract attempts
         attempts_data = []
-        
+
         if request.attempts:
             attempts_data = [{
                 'attempt': a.attempt,
@@ -59,21 +58,17 @@ async def analyze_communication(request: CommunicationRequest):
                     })
         else:
             return {"success": False, "message": "No attempt data provided"}
-        
+
         if len(attempts_data) > 3:
             return {"success": False, "message": "Maximum 3 attempts allowed per scenario."}
-        
-        # Create service instance
+
         service = AnalysisService()
-        
-        # Call the analysis service
         result = await service.analyze_communication_deep(
             scenario_id=request.scenario_id,
             attempts_data=attempts_data
         )
-        
         return result
-        
+
     except Exception as e:
         print(f"❌ Analysis error: {e}")
         import traceback
@@ -88,52 +83,50 @@ async def get_scenarios():
 
 
 # ============================================================
-# UPDATED ENDPOINT - Minimal Premium Communication Analysis
+# TEXT ANALYSIS - Deterministic-first
 # ============================================================
 
 @router.post("/analyze/premium")
 async def analyze_premium_communication(
     request: PremiumCommunicationAnalysisRequest,
-    service: AnalysisService = Depends(get_analysis_service)
+    service: AnalysisService = Depends(get_analysis_service),
 ):
     """
-    Premium Communication Analysis - Minimal Version
-    
-    Returns ONLY the essential fields needed for conversion:
-    - Impact Score (from metrics)
-    - Pattern Name & Description (from diagnosis)
-    - What Got Lost & Unspoken Gap (from gap analysis)
-    - Executive Version (1 line only, from before_after_rewrite)
-    
-    All other fields are now static/blurred in the frontend.
-    This reduces AI processing cost by ~65% and response time by ~60%.
+    Text-based communication analysis.
+
+    Deterministic signals computed locally.
+    Single LLM call for qualitative parts (pattern, gap, coaching, rewrite).
     """
     try:
-        logger.info(f"Premium analysis request (minimal) - Mode: {request.mode}, Question: {request.question_type}")
-        
-        # Validate text length
+        logger.info(f"Premium analysis - Mode: {request.mode}, Question: {request.question_type}")
+
         if not request.text or len(request.text.strip()) < 10:
             raise HTTPException(
                 status_code=400,
-                detail="Text must be at least 10 characters long"
+                detail="Text must be at least 10 characters long",
             )
-        
-        # Get minimal analysis from service
-        response = await service.analyze_premium_communication_minimal(request)
-        
-        logger.info("Minimal premium analysis completed successfully")
-        return response
-        
+
+        # Estimate duration from word count (~150 wpm typed)
+        words = len(request.text.split())
+        estimated_duration = max(10, int(words / 2.5))
+
+        result = await service.analyze_deterministic(
+            transcript=request.text,
+            duration_seconds=estimated_duration,
+            segments=None,
+            question_type=request.question_type.value if hasattr(request.question_type, "value") else str(request.question_type),
+        )
+
+        result["transcribed_text"] = request.text
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Premium analysis error: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 # ============================================================
@@ -142,121 +135,128 @@ async def analyze_premium_communication(
 
 @router.get("/analysis/modes")
 async def get_analysis_modes():
-    """Get available analysis modes."""
     return {
         "success": True,
         "modes": [
-            {"value": "voice", "label": "Voice (45s)"},
-            {"value": "text", "label": "Type (60s)"}
-        ]
+            {"value": "voice", "label": "Voice (30s)"},
+            {"value": "text", "label": "Type (60s)"},
+        ],
     }
 
 
 @router.get("/analysis/question-types")
 async def get_question_types():
-    """Get available question types."""
     return {
         "success": True,
         "question_types": [
-            {"value": "intro", "label": "Introduce Yourself", "prompt": "Tell me about yourself - your background, what you do, and what drives you professionally."},
-            {"value": "project", "label": "Current Project", "prompt": "Tell me about a current project or initiative you're leading or involved in."}
-        ]
+            {
+                "value": "intro",
+                "label": "Introduce Yourself",
+                "prompt": "Tell me about yourself - your background, what you do, and what drives you professionally.",
+            },
+            {
+                "value": "project",
+                "label": "Current Project",
+                "prompt": "Tell me about a current project or initiative you're leading or involved in.",
+            },
+        ],
     }
 
 
 @router.get("/analysis/health")
 async def analysis_health_check():
-    """Health check for analysis service."""
     return {
         "status": "healthy",
         "service": "communication-analysis",
         "endpoints": [
             "/api/communication/analyze",
             "/api/communication/analyze/premium",
+            "/api/communication/analyze/voice",
             "/api/communication/scenarios",
             "/api/communication/analysis/modes",
-            "/api/communication/analysis/question-types"
-        ]
+            "/api/communication/analysis/question-types",
+        ],
     }
 
 
 # ============================================================
-# BATCH ANALYSIS ENDPOINT (Optional - keep for reference)
+# GROQ SETUP
 # ============================================================
 
-@router.post("/analyze/batch")
-async def analyze_batch_communication(
-    requests: List[PremiumCommunicationAnalysisRequest],
-    service: AnalysisService = Depends(get_analysis_service)
-):
-    """
-    Analyze multiple communications in batch.
-    """
-    try:
-        results = []
-        for request in requests:
-            try:
-                result = await service.analyze_premium_communication_minimal(request)
-                results.append({
-                    "success": True,
-                    "request": {
-                        "mode": request.mode,
-                        "question_type": request.question_type,
-                        "text_preview": request.text[:50] + "..."
-                    },
-                    "response": result
-                })
-            except Exception as e:
-                results.append({
-                    "success": False,
-                    "request": {
-                        "mode": request.mode,
-                        "question_type": request.question_type,
-                        "text_preview": request.text[:50] + "..."
-                    },
-                    "error": str(e)
-                })
-        
-        return {
-            "success": True,
-            "results": results,
-            "total": len(results),
-            "successful": sum(1 for r in results if r["success"])
-        }
-        
-    except Exception as e:
-        logger.error(f"Batch analysis error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Batch analysis failed: {str(e)}"
-        )
-
-
-# ============================================================
-# VOICE ANALYSIS ENDPOINT - Using Groq Whisper (FREE)
-# ============================================================
-
-# Initialize Groq client with your API key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 groq_client = None
 
 if GROQ_API_KEY:
     try:
-        import openai
         groq_client = openai.OpenAI(
             api_key=GROQ_API_KEY,
-            base_url="https://api.groq.com/openai/v1"
+            base_url="https://api.groq.com/openai/v1",
         )
         print("✅ Groq client configured successfully")
     except Exception as e:
         print(f"⚠️ Groq client error: {e}")
 else:
-    print("⚠️ GROQ_API_KEY not set - voice transcription will use fallback")
+    print("⚠️ GROQ_API_KEY not set - voice transcription will fail")
 
+
+# ============================================================
+# HELPER - Groq transcription with segment timestamps
+# ============================================================
+
+def transcribe_with_segments(audio_file, client):
+    """
+    Transcribe audio with Groq Whisper, requesting segment timestamps.
+
+    Returns:
+        (text: str, segments: list[dict], detected_duration: float)
+    """
+    response = client.audio.transcriptions.create(
+        model="whisper-large-v3",
+        file=audio_file,
+        response_format="verbose_json",
+        timestamp_granularities=["segment"],
+        language="en",
+    )
+
+    # verbose_json returns an object (or dict) with .text and .segments
+    text = getattr(response, "text", None)
+    segments_raw = getattr(response, "segments", None)
+
+    # Some SDK versions return dicts
+    if text is None and isinstance(response, dict):
+        text = response.get("text", "")
+    if segments_raw is None and isinstance(response, dict):
+        segments_raw = response.get("segments", [])
+
+    text = text or ""
+    segments_raw = segments_raw or []
+
+    segments = []
+    for s in segments_raw:
+        if isinstance(s, dict):
+            segments.append({
+                "start": float(s.get("start", 0.0)),
+                "end": float(s.get("end", 0.0)),
+                "text": s.get("text", ""),
+            })
+        else:
+            segments.append({
+                "start": float(getattr(s, "start", 0.0)),
+                "end": float(getattr(s, "end", 0.0)),
+                "text": getattr(s, "text", ""),
+            })
+
+    detected_duration = segments[-1]["end"] if segments else 0.0
+    return text, segments, detected_duration
+
+
+# ============================================================
+# VOICE ANALYSIS - Deterministic-first
+# ============================================================
 
 @router.options("/analyze/voice")
 async def options_voice():
-    """Handle CORS preflight for voice endpoint"""
+    """Handle CORS preflight for voice endpoint."""
     return Response(
         status_code=200,
         headers={
@@ -265,7 +265,7 @@ async def options_voice():
             "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
             "Access-Control-Allow-Credentials": "true",
             "Access-Control-Max-Age": "3600",
-        }
+        },
     )
 
 
@@ -275,164 +275,96 @@ async def analyze_voice(
     question_type: str = Form("intro"),
     mode: str = Form("voice"),
     duration: int = Form(0),
-    service: AnalysisService = Depends(get_analysis_service)
+    service: AnalysisService = Depends(get_analysis_service),
 ):
     """
-    Analyze voice recording using Groq's free Whisper API.
-    
-    This endpoint:
-    1. Receives audio as multipart/form-data
-    2. Transcribes audio using Groq Whisper (free, high accuracy)
-    3. Analyzes the transcribed text using your AI
-    4. Returns the combined results
-    
-    Works on all devices including mobile!
+    Voice analysis: Groq Whisper → deterministic signals → 1 LLM call.
+
+    Response shape (kept compatible with previous frontend):
+      { success, transcribed_text, signals, metrics, diagnosis, gap, coaching, before_after_rewrite }
     """
     try:
-        logger.info(f"🎤 Voice analysis request - Duration: {duration}s, Question: {question_type}")
-        
-        # Log audio file details
-        logger.info(f"📁 Audio file: {audio.filename}, Content-Type: {audio.content_type}")
-        
-        # Read audio bytes
+        logger.info(f"🎤 Voice analysis - question={question_type}, duration={duration}s")
+
+        # ─── Read & validate audio ───
         audio_bytes = await audio.read()
         audio_size = len(audio_bytes)
         logger.info(f"📊 Audio size: {audio_size} bytes")
-        
-        # Validate audio
+
         if audio_size == 0:
-            logger.error("❌ Empty audio file received")
-            return {
-                "success": False,
-                "error": "No audio data received. Please try recording again."
-            }
-        
-        if audio_size > 25 * 1024 * 1024:  # 25MB limit
-            logger.error(f"❌ Audio too large: {audio_size} bytes")
-            return {
-                "success": False,
-                "error": "Audio file too large. Please record a shorter response (max 25MB)."
-            }
-        
-        # Check if Groq is configured
+            return {"success": False, "error": "No audio data received."}
+
+        if audio_size > 25 * 1024 * 1024:
+            return {"success": False, "error": "Audio too large (max 25MB)."}
+
         if not GROQ_API_KEY or not groq_client:
-            logger.warning("⚠️ Groq API not configured")
             return {
                 "success": False,
-                "error": "Voice transcription service not configured. Please try typing your response.",
-                "fallback_to_text": True
+                "error": "Voice transcription not configured. Please type your response.",
+                "fallback_to_text": True,
             }
-        
-        # Transcribe using Groq Whisper
-        logger.info("🔄 Sending to Groq Whisper for transcription...")
-        
+
+        # ─── Transcribe with segments ───
+        logger.info("🔄 Sending to Groq Whisper...")
+
+        file_extension = ".webm"
+        if audio.content_type:
+            ct = audio.content_type.lower()
+            if "wav" in ct: file_extension = ".wav"
+            elif "mp3" in ct or "mpeg" in ct: file_extension = ".mp3"
+            elif "ogg" in ct: file_extension = ".ogg"
+            elif "flac" in ct: file_extension = ".flac"
+            elif "m4a" in ct or "mp4" in ct: file_extension = ".m4a"
+
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = f"recording{file_extension}"
+
         try:
-            # Create a file-like object with proper filename
-            audio_file = io.BytesIO(audio_bytes)
-            
-            # Determine file extension from content type
-            file_extension = ".webm"  # default
-            if audio.content_type:
-                if "webm" in audio.content_type:
-                    file_extension = ".webm"
-                elif "wav" in audio.content_type:
-                    file_extension = ".wav"
-                elif "mp3" in audio.content_type or "mpeg" in audio.content_type:
-                    file_extension = ".mp3"
-                elif "ogg" in audio.content_type:
-                    file_extension = ".ogg"
-                elif "flac" in audio.content_type:
-                    file_extension = ".flac"
-                elif "m4a" in audio.content_type or "mp4" in audio.content_type:
-                    file_extension = ".m4a"
-            
-            # Set filename for Groq
-            audio_file.name = f"recording{file_extension}"
-            logger.info(f"📝 Sending file as: {audio_file.name}")
-            
-            # Transcribe
-            transcript_response = groq_client.audio.transcriptions.create(
-                model="whisper-large-v3",
-                file=audio_file,
-                response_format="text",
-                language="en"
+            transcribed_text, segments, detected_duration = transcribe_with_segments(
+                audio_file, groq_client
             )
-            
-            # Extract transcribed text
-            transcribed_text = transcript_response if isinstance(transcript_response, str) else transcript_response.text
-            
-            if not transcribed_text or len(transcribed_text.strip()) < 3:
-                logger.warning("⚠️ No clear speech detected in transcription")
-                return {
-                    "success": False,
-                    "error": "No clear speech detected. Please try speaking more clearly or type your response.",
-                    "transcribed_text": transcribed_text
-                }
-            
-            logger.info(f"✅ Transcription complete: {len(transcribed_text)} chars")
-            logger.info(f"📝 Preview: {transcribed_text[:100]}...")
-            
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Groq transcription error: {error_msg}")
-            
-            # Provide more specific error messages
-            if "invalid_media_file" in error_msg:
-                return {
-                    "success": False,
-                    "error": "The audio format was not recognized. Please try recording again with a different format or use text input.",
-                    "details": "Audio format not supported"
-                }
-            elif "file is too large" in error_msg:
-                return {
-                    "success": False,
-                    "error": "Audio file is too large. Please record a shorter response (max 25MB)."
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Transcription failed: {error_msg}",
-                    "transcribed_text": None
-                }
-        
-        # Now analyze the transcribed text using your existing analysis
-        logger.info("🔍 Analyzing transcribed text with AI...")
-        
-        # Create a PremiumCommunicationAnalysisRequest from the transcribed text
-        from app.models.schemas import PremiumCommunicationAnalysisRequest, QuestionType, AnalysisMode
-        
-        # Convert string to enum
-        mode_enum = AnalysisMode.VOICE if mode == "voice" else AnalysisMode.TEXT
-        question_type_enum = QuestionType.INTRO if question_type == "intro" else QuestionType.PROJECT
-        
-        analysis_request = PremiumCommunicationAnalysisRequest(
-            text=transcribed_text,
-            mode=mode_enum,
-            question_type=question_type_enum
+            err = str(e)
+            logger.error(f"❌ Groq error: {err}")
+            if "invalid_media_file" in err:
+                return {"success": False, "error": "Audio format not recognized."}
+            if "file is too large" in err:
+                return {"success": False, "error": "Audio too large."}
+            return {"success": False, "error": f"Transcription failed: {err}"}
+
+        if not transcribed_text or len(transcribed_text.strip()) < 3:
+            return {
+                "success": False,
+                "error": "No clear speech detected.",
+                "transcribed_text": transcribed_text,
+            }
+
+        logger.info(f"✅ Transcript: {len(transcribed_text)} chars")
+        logger.info(f"📝 Preview: {transcribed_text[:100]}...")
+
+        # ─── Determine duration ───
+        duration_used = duration or detected_duration or 30
+
+        # ─── Run deterministic analysis ───
+        logger.info("🔍 Running deterministic analysis...")
+        result = await service.analyze_deterministic(
+            transcript=transcribed_text,
+            duration_seconds=duration_used,
+            segments=segments,
+            question_type=question_type,
         )
-        
-        # Get the analysis
-        analysis_result = await service.analyze_premium_communication_minimal(analysis_request)
-        
+
+        result["transcribed_text"] = transcribed_text
         logger.info("✅ Voice analysis complete")
-        
-        # Return combined result with transcribed text (NO audio bytes in response)
-        return {
-            "success": True,
-            "transcribed_text": transcribed_text,
-            **analysis_result
-        }
-        
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Voice analysis error: {e}")
         import traceback
         traceback.print_exc()
-        return {
-            "success": False,
-            "error": f"Analysis failed: {str(e)}"
-        }
+        return {"success": False, "error": f"Analysis failed: {str(e)}"}
 
 
 # ============================================================
@@ -445,59 +377,45 @@ async def test_groq_api():
     config_status = {
         "groq_key_set": bool(GROQ_API_KEY),
         "groq_client_initialized": bool(groq_client),
-        "api_key_length": len(GROQ_API_KEY) if GROQ_API_KEY else 0
+        "api_key_length": len(GROQ_API_KEY) if GROQ_API_KEY else 0,
     }
-    
+
     if not GROQ_API_KEY or not groq_client:
         return {
             "success": False,
             "message": "Groq API not configured",
-            "config": config_status
+            "config": config_status,
         }
-    
+
     try:
-        # Create a simple test - use a small audio file instead of text
-        # Generate a simple WAV file (1 second of silence)
         import wave
-        import io
-        
-        # Create a minimal WAV file
+
+        # Build a 1-second silent WAV to test the API
         wav_io = io.BytesIO()
-        with wave.open(wav_io, 'wb') as wf:
+        with wave.open(wav_io, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(16000)
-            wf.writeframes(b'\x00\x00' * 16000)  # 1 second of silence
-        
-        wav_data = wav_io.getvalue()
-        
-        # Test transcription with the WAV file
-        test_file = io.BytesIO(wav_data)
+            wf.writeframes(b"\x00\x00" * 16000)
+
+        test_file = io.BytesIO(wav_io.getvalue())
         test_file.name = "test.wav"
-        
+
         test_response = groq_client.audio.transcriptions.create(
             model="whisper-large-v3",
             file=test_file,
-            response_format="text"
+            response_format="text",
         )
-        
+
         return {
             "success": True,
             "message": "Groq API is working!",
             "response": test_response if isinstance(test_response, str) else test_response.text,
-            "config": config_status
+            "config": config_status,
         }
     except Exception as e:
         return {
             "success": False,
             "message": f"Groq API error: {str(e)}",
-            "config": config_status
+            "config": config_status,
         }
-
-
-# ============================================================
-# EXPORT ROUTER
-# ============================================================
-
-# Note: The router is imported and used in main.py
-# All endpoints are accessible at /api/communication/*

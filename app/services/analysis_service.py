@@ -325,30 +325,31 @@ The user was asked to {context}.
 - Rambling score: {signals['rambling_score']}/100
 - Impact score: {impact_score}/100
 
-**Based on the signals + the actual text, provide ONLY these 6 fields in JSON:**
+**Use these signals to UNDERSTAND the pattern — but do NOT quote them verbatim. They inform your insight; they are not the insight itself.**
+
+**Provide ONLY these 6 fields in JSON:**
 
 {{
   "pattern_name": "Short memorable name like 'The Amplifier' or 'The Rambler'",
-  "pattern_description": "ONE sentence (max 20 words) describing the behavioral pattern in human language",
-  "what_got_lost": "1 sentence — what was lost between intent and delivery",
-  "unspoken_gap": "1 sentence — the gap between what they meant and what landed",
+  "pattern_description": "ONE clean human sentence (max 20 words) describing the behavioral pattern — no stats, no numbers",
+  "what_got_lost": "1 sentence — what was lost between intent and delivery (human language, not stats)",
+  "unspoken_gap": "1 sentence — the gap between what they meant and what landed (human language, not stats)",
   "one_thing_to_change": "1 short imperative — the single most impactful change",
   "executive_version": "EXACTLY 1 SENTENCE — their response rewritten as a confident executive summary"
 }}
 
 RULES:
-1. pattern_description should be ONE clean sentence describing the COMMUNICATION BEHAVIOR. 
-   Do NOT list raw stats (word count, wpm, delays). Do NOT quote numbers. 
-   Let the numbers shape your understanding — but speak to the human pattern.
-2. executive_version MUST be exactly 1 sentence
-3. what_got_lost and unspoken_gap should be 1 sentence each, human, not stats
-4. one_thing_to_change should be 1 short imperative
-5. Return ONLY valid JSON. No other text.
+1. pattern_description: ONE clean sentence about the COMMUNICATION BEHAVIOR. No raw stats (word count, wpm, delays). No quoted numbers. Let the numbers shape your understanding — then speak to the human pattern.
+2. what_got_lost and unspoken_gap: 1 sentence each. Human insight, not stats.
+3. one_thing_to_change: 1 short imperative
+4. executive_version: MUST be exactly 1 sentence
+5. Be specific to THIS transcript, not generic
+6. Return ONLY valid JSON. No other text.
 
 JSON:"""
 
     def _fallback_qualitative(self, signals: Dict[str, Any]) -> Dict[str, Any]:
-        """Fallback if LLM fails — uses signals to build a reasonable response."""
+        """Fallback if LLM fails — human-language descriptions, no stats."""
         filler_pct = signals["filler_words"]["percentage"]
         rambling = signals["rambling_score"]
         duration = signals.get("duration_seconds", 30)
@@ -356,28 +357,16 @@ JSON:"""
 
         if rambling > 60:
             pattern_name = "The Rambler"
-            pattern_desc = (
-                f"Your response has a rambling score of {rambling}/100 with "
-                f"{filler_pct}% filler words — your ideas circle before landing."
-            )
+            pattern_desc = "Your ideas circle before they land — you keep adding context instead of committing to the point."
         elif duration > 0 and delay > duration * 0.5:
             pattern_name = "The Amplifier"
-            pattern_desc = (
-                "You pre-justify before making your point, softening your "
-                "authority in the first few seconds."
-            )
+            pattern_desc = "You pre-justify before making your point, softening your authority in the opening."
         elif filler_pct > 6:
             pattern_name = "The Hedger"
-            pattern_desc = (
-                f"You used {signals['filler_words']['total']} filler words, "
-                "which softens your authority."
-            )
+            pattern_desc = "You qualify your statements with filler words, which softens your authority."
         else:
             pattern_name = "The Communicator"
-            pattern_desc = (
-                "You get your point across but could tighten the delivery "
-                "for more impact."
-            )
+            pattern_desc = "You get your point across but could tighten the delivery for more impact."
 
         return {
             "pattern_name": pattern_name,

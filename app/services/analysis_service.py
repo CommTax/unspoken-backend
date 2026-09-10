@@ -329,7 +329,7 @@ The user was asked to {context}.
 
 {{
   "pattern_name": "Short memorable name like 'The Amplifier' or 'The Rambler'",
-  "pattern_description": "1-2 sentences explaining the pattern, referencing specific signals",
+  "pattern_description": "ONE sentence (max 20 words) describing the behavioral pattern in human language",
   "what_got_lost": "1 sentence — what was lost between intent and delivery",
   "unspoken_gap": "1 sentence — the gap between what they meant and what landed",
   "one_thing_to_change": "1 short imperative — the single most impactful change",
@@ -337,10 +337,13 @@ The user was asked to {context}.
 }}
 
 RULES:
-1. Reference SPECIFIC signals (e.g., "your 5 fillers", "your 18s delay")
+1. pattern_description should be ONE clean sentence describing the COMMUNICATION BEHAVIOR. 
+   Do NOT list raw stats (word count, wpm, delays). Do NOT quote numbers. 
+   Let the numbers shape your understanding — but speak to the human pattern.
 2. executive_version MUST be exactly 1 sentence
-3. Be specific to THIS transcript, not generic
-4. Return ONLY valid JSON. No other text.
+3. what_got_lost and unspoken_gap should be 1 sentence each, human, not stats
+4. one_thing_to_change should be 1 short imperative
+5. Return ONLY valid JSON. No other text.
 
 JSON:"""
 

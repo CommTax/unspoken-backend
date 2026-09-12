@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 
 # Import routes
-from app.routes import persona, leads, communication
+from app.routes import persona, leads, communication, drills
 
 load_dotenv()
 
@@ -48,6 +48,7 @@ app.include_router(leads.router, prefix="/api", tags=["Leads"])
 
 # Communication Analysis Routes (Front Page Testing)
 app.include_router(communication.router, prefix="/api/communication", tags=["Communication Analysis"])
+app.include_router(drills.router, prefix="/api/drills", tags=["Drills"])
 
 # ============================================================
 # ROOT & HEALTH ENDPOINTS

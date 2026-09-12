@@ -12,3 +12,6 @@ google-generativeai
 openai>=1.0.0
 python-multipart
 python-jose[cryptography]
+boto3
+psycopg2-binary
+

@@ -11,3 +11,4 @@ pip==26.2.1
 google-generativeai
 openai>=1.0.0
 python-multipart
+python-jose[cryptography]

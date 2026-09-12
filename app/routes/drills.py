@@ -234,6 +234,7 @@ def analyze_drill(token: str = Depends(bearer_token)):
         analysis["name"] = drill.get("name") or "Guest"
         analysis["email"] = email
         analysis["stage"] = drill.get("stage") or "early"
+        analysis["question_type"] = drill.get("question_type") or "intro"  # ← NEW
         analysis["question"] = drill.get("question_prompt") or "Tell me about yourself."
 
         return analysis

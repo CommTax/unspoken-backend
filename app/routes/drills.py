@@ -17,7 +17,7 @@ from jose import jwt, JWTError
 
 from app.services.db import get_conn, dict_cursor
 from app.services.r2_client import upload_to_r2, download_from_r2
-from app.services.gemini_client import GEMINI_API_KEY, gemini_generate_json
+from app.services.gemini_client import GEMINI_API_KEY, call_gemini_api
 from app.services.voice import transcribe_audio  # see below — create if missing
 
 

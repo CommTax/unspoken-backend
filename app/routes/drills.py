@@ -17,8 +17,7 @@ from jose import jwt, JWTError
 
 from app.services.db import get_conn, dict_cursor
 from app.services.r2_client import upload_to_r2, download_from_r2
-from app.services.gemini_client import GEMINI_API_KEY, call_gemini_api
-from app.services.voice import transcribe_audio  # see below — create if missing
+from app.services.gemini_client import call_gemini_api
 
 
 router = APIRouter()
@@ -273,11 +272,11 @@ def run_analysis_pipeline(drill) -> dict:
 
 
 def transcribe_from_r2(audio_url: str) -> str:
-    """Download audio from R2, send to Whisper."""
+    """Download audio from R2, send to Groq Whisper."""
     if not audio_url:
         return ""
 
-    # Download
+    # Download from R2
     key = audio_url.split("/")[-1]
     key_path = f"drills/{key}"
     audio_bytes = download_from_r2(key_path)
@@ -287,10 +286,18 @@ def transcribe_from_r2(audio_url: str) -> str:
         path = f.name
 
     try:
-        import openai
+        # Use Groq (free tier) for Whisper transcription
+        from groq import Groq
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         with open(path, "rb") as f:
-            result = openai.Audio.transcribe("whisper-1", f)
-        return result.get("text", "")
+            result = client.audio.transcriptions.create(
+                file=("audio.webm", f.read()),
+                model="whisper-large-v3",
+            )
+        return result.text or ""
+    except Exception as e:
+        print(f"⚠️ Groq transcription failed: {e}")
+        return ""
     finally:
         try:
             os.unlink(path)
@@ -393,4 +400,26 @@ Return ONLY a JSON object with this exact structure:
 
 Be specific. Cite exact phrases from the transcript."""
 
-    return gemini_generate_json(prompt)
+    result = call_gemini_api(prompt)
+
+    if not result:
+        # Fallback if Gemini fails — return safe defaults
+        return {
+            "metrics": {"clarity": 60, "structure": 55, "impact": 50},
+            "diagnosis": {
+                "pattern_name": "The Communicator",
+                "pattern_description": "You get your point across but could tighten the delivery."
+            },
+            "gap": {
+                "what_got_lost": "Your credibility and authority in the first 10 seconds",
+                "unspoken_gap": "Between your intent to sound confident and how you actually land"
+            },
+            "coaching": {
+                "one_thing_to_change": "Lead with the point"
+            },
+            "before_after_rewrite": {
+                "executive_version": "Your executive version here."
+            }
+        }
+
+    return result

@@ -27,3 +27,14 @@ def download_from_r2(key: str) -> bytes:
     client = _client()
     obj = client.get_object(Bucket=bucket, Key=key)
     return obj["Body"].read()
+
+
+def delete_from_r2(url_or_key: str):
+    """Delete an object. Accepts either a full URL or just the key."""
+    bucket = os.environ["R2_BUCKET"]
+    if url_or_key.startswith("http"):
+        key = url_or_key.split(f"{bucket}/")[-1]
+    else:
+        key = url_or_key
+    client = _client()
+    client.delete_object(Bucket=bucket, Key=key)

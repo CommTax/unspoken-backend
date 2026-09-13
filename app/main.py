@@ -49,6 +49,7 @@ app.include_router(leads.router, prefix="/api", tags=["Leads"])
 # Communication Analysis Routes (Front Page Testing)
 app.include_router(communication.router, prefix="/api/communication", tags=["Communication Analysis"])
 app.include_router(drills.router, prefix="/api/drills", tags=["Drills"])
+app.include_router(checkout.router, prefix="/api/checkout", tags=["Checkout"])
 
 # Checkout / Payments Routes
 app.include_router(checkout.router, prefix="/api/checkout", tags=["Checkout"])

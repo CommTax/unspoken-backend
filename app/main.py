@@ -3,10 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
 
+load_dotenv()
 # Import routes
 from app.routes import persona, leads, communication, drills, checkout
-
-load_dotenv()
 
 # Create app
 app = FastAPI(

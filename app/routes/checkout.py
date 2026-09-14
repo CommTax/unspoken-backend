@@ -45,8 +45,8 @@ def get_razorpay_client():
 # PLAN PRICING (in paise)
 # ============================================================
 PLAN_PRICING = {
-    "sprint": 149900,   # ₹1,499
-    "pass": 399900,     # ₹3,999
+    "sprint": 100,   # ₹1,499
+    "pass": 200,     # ₹3,999
 }
 
 

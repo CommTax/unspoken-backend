@@ -19,13 +19,13 @@ class Config:
     FRONTEND_URL = os.environ.get('FRONTEND_URL', '*')
     
     # ============================================================
-    # RAZORPAY (NEW)
+    # RAZORPAY — read from env vars set in Render
     # ============================================================
-    RAZORPAY_KEY_ID = os.environ.get('rzp_live_TN9VVH5DwiHx0L', '')
-    RAZORPAY_KEY_SECRET = os.environ.get('VVm0T6QsbLGlRxbM63uMV7JL', '')
+    RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', '')
+    RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', '')
     
     # ============================================================
-    # JWT SESSION TOKENS (NEW)
+    # JWT SESSION TOKENS
     # ============================================================
     JWT_SECRET = os.environ.get('JWT_SECRET', 'change_this_in_production')
     JWT_ALGORITHM = 'HS256'

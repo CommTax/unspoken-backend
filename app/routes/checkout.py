@@ -136,7 +136,7 @@ async def verify_payment(req: VerifyPaymentRequest):
     if req.plan == "sprint":
         duration_days = 28
     elif req.plan == "pass":
-        duration_days = 365
+        duration_days = 30
     else:
         raise HTTPException(status_code=400, detail="Invalid plan")
 

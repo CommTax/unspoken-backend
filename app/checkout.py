@@ -19,6 +19,6 @@ razorpay_client = razorpay.Client(
 )
 
 PLAN_PRICING = {
-    "sprint": 149900,
-    "pass": 399900,
+    "sprint": 100,
+    "pass": 200,
 }

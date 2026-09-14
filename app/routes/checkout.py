@@ -29,8 +29,8 @@ razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 # PRICING
 # ============================================================
 PLAN_PRICING = {
-    "sprint": 149900,   # ₹1,499 in paise
-    "pass": 399900,     # ₹3,999 in paise
+    "sprint": 100,   # ₹1,499 in paise
+    "pass": 100,     # ₹3,999 in paise
 }
 
 

@@ -11,7 +11,7 @@ router = APIRouter()
 
 @router.get("")
 async def get_questions(
-    sprint: str = Query(..., description="interview, gd, leadership, storytelling, charisma"),
+    sprint: str = Query(...),
     day: Optional[int] = Query(None),
     limit: int = Query(200, le=500),
 ):

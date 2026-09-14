@@ -5,7 +5,7 @@ import os
 
 load_dotenv()
 # Import routes
-from app.routes import persona, leads, communication, drills, checkout, questions
+from app.routes import persona, leads, communication, drills, checkout, questions, auth
 
 # Create app
 app = FastAPI(
@@ -52,6 +52,7 @@ app.include_router(drills.router, prefix="/api/drills", tags=["Drills"])
 app.include_router(checkout.router, prefix="/api/checkout", tags=["Checkout"])
 
 app.include_router(questions.router, prefix="/api/questions", tags=["Questions"])
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 
 # ============================================================
 # ROOT & HEALTH ENDPOINTS

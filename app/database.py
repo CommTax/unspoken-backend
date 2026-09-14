@@ -1,22 +1,19 @@
 # app/database.py
 
 import asyncpg
+import json
+import uuid
+from datetime import datetime, timedelta
 from app.config import Config
 
 
 async def get_db():
-    """
-    Get a single database connection.
-    Use this for simple queries where you don't need a connection pool.
-    """
+    """Get a single database connection."""
     return await asyncpg.connect(Config.DATABASE_URL)
 
 
 async def get_db_pool():
-    """
-    Get a database connection pool.
-    Use this for production to manage multiple concurrent connections.
-    """
+    """Get a database connection pool."""
     return await asyncpg.create_pool(
         Config.DATABASE_URL,
         min_size=1,
@@ -26,124 +23,14 @@ async def get_db_pool():
 
 
 async def close_db_pool(pool):
-    """
-    Close the database connection pool.
-    """
+    """Close the database connection pool."""
     if pool:
         await pool.close()
 
 
 # ============================================================
-# CHECKOUT — User + Subscription helpers
+# CHECKOUT — PAID USER CREATION
 # ============================================================
-
-async def save_user_and_subscription(
-    name: str,
-    email: str,
-    phone: str,
-    plan: str,
-    sprint: str,
-    payment_id: str,
-    order_id: str,
-    amount: int,
-) -> int:
-    """
-    Create or find a user by email, then create a subscription row.
-    Returns the user_id (int).
-    """
-    conn = await asyncpg.connect(Config.DATABASE_URL)
-    try:
-        async with conn.transaction():
-            # 1. Find or create user
-            user_row = await conn.fetchrow(
-                "SELECT id FROM users WHERE email = $1",
-                email,
-            )
-
-            if user_row:
-                user_id = user_row["id"]
-                # Update name/phone if they were empty
-                await conn.execute(
-                    """
-                    UPDATE users
-                    SET name = COALESCE(NULLIF(name, ''), $1),
-                        phone = COALESCE(NULLIF(phone, ''), $2)
-                    WHERE id = $3
-                    """,
-                    name, phone, user_id,
-                )
-            else:
-                user_id = await conn.fetchval(
-                    """
-                    INSERT INTO users (name, email, phone, created_at)
-                    VALUES ($1, $2, $3, NOW())
-                    RETURNING id
-                    """,
-                    name, email, phone,
-                )
-
-            # 2. Compute end date based on plan
-            if plan == "sprint":
-                duration_days = 28
-            else:  # "pass"
-                duration_days = 365
-
-            # 3. Insert subscription
-            await conn.execute(
-                """
-                INSERT INTO subscriptions (
-                    user_id, plan, sprint, payment_id, order_id,
-                    amount, status, start_date, end_date
-                )
-                VALUES (
-                    $1, $2, $3, $4, $5,
-                    $6, 'active', NOW(), NOW() + ($7 || ' days')::interval
-                )
-                """,
-                user_id, plan, sprint, payment_id, order_id,
-                amount, str(duration_days),
-            )
-
-            return user_id
-
-    finally:
-        await conn.close()
-
-
-async def get_user_by_id(user_id: int):
-    """
-    Fetch a user + their latest subscription. Used by the product page
-    to verify a session token and load the right dashboard.
-    """
-    conn = await asyncpg.connect(Config.DATABASE_URL)
-    try:
-        user = await conn.fetchrow(
-            "SELECT id, name, email, phone, created_at FROM users WHERE id = $1",
-            user_id,
-        )
-        if not user:
-            return None
-
-        subscription = await conn.fetchrow(
-            """
-            SELECT id, plan, sprint, status, start_date, end_date
-            FROM subscriptions
-            WHERE user_id = $1 AND status = 'active'
-            ORDER BY start_date DESC
-            LIMIT 1
-            """,
-            user_id,
-        )
-
-        return {
-            "user": dict(user),
-
-            # ============================================================
-# CHECKOUT HELPERS
-# ============================================================
-import uuid
-from datetime import datetime, timedelta
-
 
 async def create_paid_user_and_session(
     name: str,
@@ -176,7 +63,6 @@ async def create_paid_user_and_session(
 
             if user_row:
                 user_id = user_row["user_id"]
-                # Update name/phone if they were empty
                 await conn.execute(
                     """
                     UPDATE users
@@ -243,7 +129,7 @@ async def create_paid_user_and_session(
                 )
                 """,
                 razorpay_payment_id, email, plan,
-                sprint, amount / 100,  # convert paise → INR
+                sprint, amount / 100,  # paise → INR
                 razorpay_order_id, razorpay_signature,
                 json.dumps({"plan": plan, "sprint": sprint, "phone": phone}),
             )
@@ -293,6 +179,10 @@ async def create_paid_user_and_session(
         await conn.close()
 
 
+# ============================================================
+# CHECKOUT — SESSION VERIFICATION
+# ============================================================
+
 async def get_user_by_session_token(token: str):
     """
     Returns user + plan info if the token is a valid paid session.
@@ -301,7 +191,6 @@ async def get_user_by_session_token(token: str):
     """
     conn = await asyncpg.connect(Config.DATABASE_URL)
     try:
-        # 1. Look up session token
         token_row = await conn.fetchrow(
             """
             SELECT jti, email, drill_id, expires_at, used_at
@@ -317,11 +206,11 @@ async def get_user_by_session_token(token: str):
         if token_row["expires_at"] < datetime.utcnow():
             return None
 
-        # 2. Drill session → not paid
+        # Drill session → not paid
         if token_row["drill_id"] is not None:
             return {"is_paid": False}
 
-        # 3. Paid session → fetch user + user_session
+        # Paid session → fetch user + user_session
         email = token_row["email"]
 
         user_row = await conn.fetchrow(
@@ -365,9 +254,5 @@ async def get_user_by_session_token(token: str):
             "total_days": session_row["total_days"],
         }
 
-    finally:
-        await conn.close()
-            "subscription": dict(subscription) if subscription else None,
-        }
     finally:
         await conn.close()

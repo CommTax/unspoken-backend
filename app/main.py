@@ -27,7 +27,6 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:5500",
         "http://127.0.0.1:5500",
-        # ❌ REMOVED: "*" - can't use with allow_credentials=True
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -49,9 +48,8 @@ app.include_router(leads.router, prefix="/api", tags=["Leads"])
 # Communication Analysis Routes (Front Page Testing)
 app.include_router(communication.router, prefix="/api/communication", tags=["Communication Analysis"])
 app.include_router(drills.router, prefix="/api/drills", tags=["Drills"])
-app.include_router(checkout.router, prefix="/api/checkout", tags=["Checkout"])
 
-# Checkout / Payments Routes
+# Checkout / Payments Routes (only ONE registration)
 app.include_router(checkout.router, prefix="/api/checkout", tags=["Checkout"])
 
 # ============================================================
@@ -81,6 +79,11 @@ async def root():
                 "GET /api/communication/analysis/modes": "Get Available Analysis Modes",
                 "GET /api/communication/analysis/question-types": "Get Available Question Types",
                 "POST /api/communication/analyze/batch": "Batch Communication Analysis"
+            },
+            "checkout": {
+                "POST /api/checkout/create-order": "Create Razorpay order",
+                "POST /api/checkout/verify-payment": "Verify payment and create user session",
+                "POST /api/checkout/verify-session": "Verify a paid session token"
             }
         }
     }
@@ -92,6 +95,9 @@ async def health_check():
         "status": "healthy",
         "gemini_configured": bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here"),
         "database_configured": bool(os.environ.get("DATABASE_URL")),
+        "razorpay_configured": bool(
+            os.environ.get("RAZORPAY_KEY_ID") and os.environ.get("RAZORPAY_KEY_SECRET")
+        ),
         "service": "Unspoken Backend",
         "version": "2.0.0",
         "features": {
@@ -106,6 +112,22 @@ async def health_check():
 async def test_gemini():
     from app.services.gemini_client import test_gemini_api
     return await test_gemini_api()
+
+
+# ============================================================
+# DEBUG — TEMPORARY — DELETE AFTER FIXING ENV VARS
+# ============================================================
+@app.get("/api/debug/env")
+async def debug_env():
+    return {
+        "razorpay_key_id_set": bool(os.environ.get("RAZORPAY_KEY_ID")),
+        "razorpay_key_id_length": len(os.environ.get("RAZORPAY_KEY_ID") or ""),
+        "razorpay_key_id_prefix": (os.environ.get("RAZORPAY_KEY_ID") or "EMPTY")[:12],
+        "razorpay_key_secret_set": bool(os.environ.get("RAZORPAY_KEY_SECRET")),
+        "razorpay_key_secret_length": len(os.environ.get("RAZORPAY_KEY_SECRET") or ""),
+        "razorpay_env_vars_present": [k for k in os.environ.keys() if "RAZORPAY" in k.upper()],
+    }
+
 
 # ============================================================
 # RUN

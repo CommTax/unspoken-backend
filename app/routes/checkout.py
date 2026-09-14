@@ -16,12 +16,30 @@ from app.database import (
 
 router = APIRouter()
 
+
 # ============================================================
-# RAZORPAY CLIENT
+# RAZORPAY CLIENT FACTORY — creates a fresh client per call
 # ============================================================
-razorpay_client = razorpay.Client(
-    auth=(Config.RAZORPAY_KEY_ID, Config.RAZORPAY_KEY_SECRET)
-)
+def get_razorpay_client():
+    """
+    Creates a fresh Razorpay client using the CURRENT env values.
+    This avoids the "stale client" bug where the client is bound at
+    module import time and never picks up env var changes.
+    """
+    key_id = Config.RAZORPAY_KEY_ID
+    key_secret = Config.RAZORPAY_KEY_SECRET
+
+    # Diagnostic prints so we can see what values are being used
+    print("🔎 Razorpay client init — KEY_ID prefix:", (key_id or "EMPTY")[:12])
+    print("🔎 Razorpay client init — SECRET length:", len(key_secret or ""))
+
+    if not key_id or not key_secret:
+        raise RuntimeError(
+            "RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is not set in the environment"
+        )
+
+    return razorpay.Client(auth=(key_id, key_secret))
+
 
 # ============================================================
 # PLAN PRICING (in paise)
@@ -31,12 +49,13 @@ PLAN_PRICING = {
     "pass": 399900,     # ₹3,999
 }
 
+
 # ============================================================
 # REQUEST MODELS
 # ============================================================
 class CreateOrderRequest(BaseModel):
-    plan: str        # "sprint" or "pass"
-    sprint: str      # "interview", "gd", "leadership", "storytelling", "charisma"
+    plan: str
+    sprint: str
     name: str
     email: str
     phone: str
@@ -64,7 +83,10 @@ async def create_order(req: CreateOrderRequest):
     amount = PLAN_PRICING[req.plan]
 
     try:
-        order = razorpay_client.order.create({
+        # ✅ Create the client fresh, using current env vars
+        client = get_razorpay_client()
+
+        order = client.order.create({
             "amount": amount,
             "currency": "INR",
             "receipt": f"rcpt_{int(datetime.utcnow().timestamp())}",
@@ -82,7 +104,15 @@ async def create_order(req: CreateOrderRequest):
             "currency": "INR"
         }
     except Exception as e:
-        print(f"❌ Razorpay create order error: {repr(e)}")
+        import traceback
+        print("❌ Razorpay create order FAILED")
+        print("❌ Error:", repr(e))
+        print("❌ KEY_ID prefix:", (Config.RAZORPAY_KEY_ID or "EMPTY")[:12])
+        print("❌ KEY_ID length:", len(Config.RAZORPAY_KEY_ID or ""))
+        print("❌ KEY_SECRET length:", len(Config.RAZORPAY_KEY_SECRET or ""))
+        print("❌ KEY_SECRET has space:", " " in (Config.RAZORPAY_KEY_SECRET or ""))
+        print("❌ KEY_SECRET has quote:", '"' in (Config.RAZORPAY_KEY_SECRET or ""))
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Failed to create order")
 
 
@@ -141,12 +171,6 @@ async def verify_payment(req: VerifyPaymentRequest):
 # ============================================================
 @router.post("/verify-session")
 async def verify_session(request: Request):
-    """
-    Called by the product page to check if a session token is:
-      - A paid session → return full user + plan
-      - A drill session → return { is_paid: False } so product page falls back to drill flow
-      - Invalid → 401
-    """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
@@ -160,7 +184,6 @@ async def verify_session(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    # If the session has no plan, it's a drill session
     if not user.get("is_paid"):
         return {"is_paid": False}
 

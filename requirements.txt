@@ -18,3 +18,4 @@ pydantic[email]
 razorpay
 PyJWT
 resend
+groq

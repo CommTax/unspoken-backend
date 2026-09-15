@@ -1,11 +1,13 @@
 # app/routes/drills.py
 """
-Drill upload, capture, and analyze endpoints.
+Drill upload, capture, analyze, and session endpoints.
 
 Flow (trial):
   1. POST /api/drills/upload          -> { drill_id }
   2. POST /api/drills/capture         -> { user_id, session_token, drill_id }
   3. POST /api/drills/analyze         -> full analysis payload
+     (Authorization: Bearer <session_token>)
+  4. POST /api/drills/session         -> trial user profile + latest analysis
      (Authorization: Bearer <session_token>)
 
 Flow (paid):
@@ -279,6 +281,83 @@ def analyze_drill(payload: AnalyzePayload,
         return analysis
     finally:
         conn.close()
+
+
+# ============================================================
+# POST /api/drills/session
+# ============================================================
+@router.post("/session")
+def get_trial_session(token: str = Depends(bearer_token)):
+    """Called by the /trial page after landing-page redirect.
+    Returns the trial user's profile + their answered drill's analysis."""
+    claims = verify_session_token(token)
+    email = claims["sub"]
+
+    conn = get_conn()
+    try:
+        with dict_cursor(conn) as cur:
+            # User profile
+            cur.execute("""
+                SELECT email, name, stage FROM user_sessions WHERE email = %s
+            """, (email,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(404, "Session not found")
+
+            # Most recent analyzed trial drill
+            cur.execute("""
+                SELECT drill_id, question_slot, question_type,
+                       transcript, signals, metrics, diagnosis, gap, coaching,
+                       before_after, analyzed_at
+                FROM free_drills
+                WHERE user_id = %s AND trial = TRUE AND status = 'analyzed'
+                ORDER BY analyzed_at DESC
+                LIMIT 1
+            """, (email,))
+            drill = cur.fetchone()
+
+            # Count trials per slot
+            cur.execute("""
+                SELECT question_slot, COUNT(*) AS n
+                FROM free_drills
+                WHERE user_id = %s AND trial = TRUE AND status = 'analyzed'
+                  AND question_slot IS NOT NULL
+                GROUP BY question_slot
+            """, (email,))
+            counts = {row["question_slot"]: row["n"] for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+    analysis = None
+    answered = None
+    if drill:
+        answered = drill["question_slot"]
+        analysis = {
+            "transcribed_text": drill["transcript"] or "",
+            "signals": drill["signals"] or {},
+            "metrics": drill["metrics"] or {},
+            "diagnosis": drill["diagnosis"] or {},
+            "gap": drill["gap"] or {},
+            "coaching": drill["coaching"] or {},
+            "before_after_rewrite": None,
+        }
+
+    return {
+        "is_paid": False,
+        "user_id": email,
+        "name": user["name"],
+        "email": email,
+        "stage": user["stage"],
+        "q1_text": "Tell me about yourself — your background, what you do, and what drives you professionally.",
+        "q2_text": "Tell me about a current project or initiative you're leading or involved in.",
+        "answered": answered,
+        "analysis": analysis,
+        "trials_used": {
+            "q1": counts.get("q1", 0),
+            "q2": counts.get("q2", 0),
+        },
+        "trials_cap_per_question": TRIAL_CAP_PER_QUESTION,
+    }
 
 
 # ============================================================

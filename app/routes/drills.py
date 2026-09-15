@@ -1,10 +1,24 @@
 # app/routes/drills.py
 """
 Drill upload, capture, and analyze endpoints.
-Bridges the landing page → product page handoff via one-time JWT sessions.
+
+Flow (trial):
+  1. POST /api/drills/upload          -> { drill_id }
+  2. POST /api/drills/capture         -> { user_id, session_token, drill_id }
+  3. POST /api/drills/analyze         -> full analysis payload
+     (Authorization: Bearer <session_token>)
+
+Flow (paid):
+  1. POST /api/drills/upload          -> { drill_id }
+  2. POST /api/drills/analyze         -> full analysis payload
+     (Authorization: Bearer <otp_session_token>)
+
+Rule-based metrics. One Gemini call per drill for qualitative only.
+Executive rewrite is only generated for paid users.
 """
 
 import os
+import re
 import json
 import uuid
 import tempfile
@@ -25,30 +39,31 @@ router = APIRouter()
 # ─── CONFIG ───
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-env")
 JWT_ALGO = "HS256"
-JWT_EXPIRES_MIN = int(os.getenv("JWT_EXPIRES_MINUTES", "10"))
+SESSION_EXPIRES_HOURS = int(os.getenv("SESSION_EXPIRES_HOURS", "24"))
+TRIAL_CAP_PER_QUESTION = 2
 
 
-# ─── HELPERS ───
-def issue_token(email: str, drill_id: str) -> tuple[str, str]:
+# ─── AUTH HELPERS ───
+def issue_session_token(email: str, trial: bool) -> tuple[str, str]:
     """Returns (jti, signed_token)."""
     jti = str(uuid.uuid4())
     now = datetime.utcnow()
     payload = {
         "sub": email,
-        "drill_id": str(drill_id),
         "jti": jti,
+        "trial": trial,
         "iat": now,
-        "exp": now + timedelta(minutes=JWT_EXPIRES_MIN),
+        "exp": now + timedelta(hours=SESSION_EXPIRES_HOURS),
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
     return jti, token
 
 
-def verify_token(token: str) -> dict:
+def verify_session_token(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
     except JWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+        raise HTTPException(status_code=401, detail=f"Invalid session: {e}")
 
 
 def bearer_token(authorization: Optional[str] = Header(None)) -> str:
@@ -64,7 +79,12 @@ class CapturePayload(BaseModel):
     email: EmailStr
     stage: str
     question_type: Optional[str] = "intro"
+    question_slot: Optional[str] = None  # 'q1' | 'q2'
     mode: Optional[str] = "voice"
+
+
+class AnalyzePayload(BaseModel):
+    drill_id: str
 
 
 # ============================================================
@@ -75,6 +95,9 @@ async def upload_drill(
     audio: Optional[UploadFile] = File(None),
     text: Optional[str] = Form(None),
     question_type: str = Form("intro"),
+    question_slot: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None),
+    trial: Optional[str] = Form("true"),
     mode: str = Form("voice"),
     duration_seconds: int = Form(30),
 ):
@@ -86,7 +109,6 @@ async def upload_drill(
     drill_id = str(uuid.uuid4())
     audio_url = None
 
-    # Upload audio to R2 (if voice)
     if mode == "voice" and audio:
         try:
             content = await audio.read()
@@ -95,15 +117,18 @@ async def upload_drill(
         except Exception as e:
             raise HTTPException(500, f"R2 upload failed: {e}")
 
-    # Insert drill row
+    is_trial = str(trial).lower() == "true"
+
     conn = get_conn()
     try:
         with dict_cursor(conn) as cur:
             cur.execute("""
                 INSERT INTO free_drills
-                  (drill_id, status, mode, question_type, audio_url, duration_seconds, raw_text)
-                VALUES (%s, 'uploaded', %s, %s, %s, %s, %s)
-            """, (drill_id, mode, question_type, audio_url, duration_seconds, text))
+                  (drill_id, status, mode, question_type, question_slot,
+                   user_id, trial, audio_url, duration_seconds, raw_text)
+                VALUES (%s, 'uploaded', %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (drill_id, mode, question_type, question_slot,
+                  user_id, is_trial, audio_url, duration_seconds, text))
     finally:
         conn.close()
 
@@ -118,17 +143,18 @@ def capture_lead(payload: CapturePayload):
     conn = get_conn()
     try:
         with dict_cursor(conn) as cur:
-            # Verify drill exists
             cur.execute("SELECT drill_id FROM free_drills WHERE drill_id = %s", (payload.drill_id,))
             if not cur.fetchone():
                 raise HTTPException(404, "drill_id not found")
 
-            # Link drill to email
+            # Link drill to email + slot
             cur.execute("""
-                UPDATE free_drills SET email = %s WHERE drill_id = %s
-            """, (payload.email, payload.drill_id))
+                UPDATE free_drills
+                SET email = %s, user_id = %s, question_slot = COALESCE(%s, question_slot)
+                WHERE drill_id = %s
+            """, (payload.email, payload.email, payload.question_slot, payload.drill_id))
 
-            # Upsert into user_sessions (creates the trial session)
+            # Upsert trial user session
             cur.execute("""
                 INSERT INTO user_sessions (email, name, stage, plan, current_day, total_days,
                                            questions_per_day, trials_per_question)
@@ -139,21 +165,20 @@ def capture_lead(payload: CapturePayload):
                   updated_at = NOW()
             """, (payload.email, payload.name, payload.stage))
 
-            # Issue one-time-use token
-            jti, token = issue_token(payload.email, payload.drill_id)
-            expires_at = datetime.utcnow() + timedelta(minutes=JWT_EXPIRES_MIN)
+            # Issue a long-lived session token (NOT one-time-use)
+            jti, token = issue_session_token(payload.email, trial=True)
+            expires_at = datetime.utcnow() + timedelta(hours=SESSION_EXPIRES_HOURS)
             cur.execute("""
-                INSERT INTO session_tokens (jti, email, drill_id, expires_at)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO session_tokens (jti, email, drill_id, expires_at, trial)
+                VALUES (%s, %s, %s, %s, TRUE)
             """, (jti, payload.email, payload.drill_id, expires_at))
-
     finally:
         conn.close()
 
     return {
         "user_id": payload.email,
         "session_token": token,
-        "expires_in": JWT_EXPIRES_MIN * 60,
+        "expires_in": SESSION_EXPIRES_HOURS * 3600,
         "drill_id": payload.drill_id,
     }
 
@@ -162,46 +187,57 @@ def capture_lead(payload: CapturePayload):
 # POST /api/drills/analyze
 # ============================================================
 @router.post("/analyze")
-def analyze_drill(token: str = Depends(bearer_token)):
-    # Verify JWT
-    claims = verify_token(token)
-    jti = claims["jti"]
+def analyze_drill(payload: AnalyzePayload,
+                  token: str = Depends(bearer_token)):
+    claims = verify_session_token(token)
     email = claims["sub"]
-    drill_id = claims["drill_id"]
+    is_trial = bool(claims.get("trial", False))
 
     conn = get_conn()
     try:
         with dict_cursor(conn) as cur:
-            # Check token not used
-            cur.execute("SELECT used_at, expires_at FROM session_tokens WHERE jti = %s", (jti,))
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(401, "Token not found")
-            if row["used_at"] is not None:
-                raise HTTPException(401, "Token already used")
-            if row["expires_at"] < datetime.utcnow():
-                raise HTTPException(401, "Token expired")
-
-            # Load drill
+            # Load drill + user
             cur.execute("""
                 SELECT d.*, s.name, s.stage
                 FROM free_drills d
                 LEFT JOIN user_sessions s ON s.email = d.email
                 WHERE d.drill_id = %s
-            """, (drill_id,))
+            """, (payload.drill_id,))
             drill = cur.fetchone()
             if not drill:
                 raise HTTPException(404, "Drill not found")
 
+            # Ownership check for paid users
+            if not is_trial and drill.get("email") and drill["email"] != email:
+                raise HTTPException(403, "Not your drill")
+
+            # Trial cap check
+            if is_trial and drill.get("question_slot"):
+                cur.execute("""
+                    SELECT COUNT(*) AS n FROM free_drills
+                    WHERE user_id = %s
+                      AND question_slot = %s
+                      AND trial = TRUE
+                      AND status = 'analyzed'
+                      AND drill_id <> %s
+                """, (email, drill["question_slot"], payload.drill_id))
+                prior = cur.fetchone()["n"]
+                if prior >= TRIAL_CAP_PER_QUESTION:
+                    raise HTTPException(403, detail={
+                        "error": "TRIAL_CAP_REACHED",
+                        "question": drill["question_slot"],
+                    })
+
         # ─── Run analysis ───
         try:
-            analysis = run_analysis_pipeline(drill)
+            analysis = run_analysis_pipeline(drill, is_trial=is_trial)
         except Exception as e:
             with dict_cursor(conn) as cur:
-                cur.execute("UPDATE free_drills SET status = 'failed' WHERE drill_id = %s", (drill_id,))
+                cur.execute("UPDATE free_drills SET status = 'failed' WHERE drill_id = %s",
+                            (payload.drill_id,))
             raise HTTPException(500, f"Analysis failed: {e}")
 
-        # ─── Save results + mark token used ───
+        # ─── Save results ───
         with dict_cursor(conn) as cur:
             cur.execute("""
                 UPDATE free_drills
@@ -222,20 +258,23 @@ def analyze_drill(token: str = Depends(bearer_token)):
                 json.dumps(analysis["diagnosis"]),
                 json.dumps(analysis["gap"]),
                 json.dumps(analysis["coaching"]),
-                json.dumps(analysis["before_after_rewrite"]),
-                drill_id,
+                json.dumps(analysis.get("before_after_rewrite") or {}),
+                payload.drill_id,
             ))
 
-            cur.execute("UPDATE session_tokens SET used_at = NOW() WHERE jti = %s", (jti,))
-
-        # Merge lead info into response
-        analysis["drill_id"] = drill_id
+        # Augment response
+        analysis["drill_id"] = payload.drill_id
         analysis["user_id"] = email
         analysis["name"] = drill.get("name") or "Guest"
         analysis["email"] = email
         analysis["stage"] = drill.get("stage") or "early"
-        analysis["question_type"] = drill.get("question_type") or "intro"  # ← NEW
-        analysis["question"] = drill.get("question_prompt") or "Tell me about yourself."
+        analysis["question_type"] = drill.get("question_type") or "intro"
+        analysis["question_slot"] = drill.get("question_slot")
+        analysis["question_text"] = drill.get("question_prompt") or "Tell me about yourself."
+        analysis["is_trial"] = is_trial
+        # Executive rewrite is withheld for trial users
+        if is_trial:
+            analysis["before_after_rewrite"] = None
 
         return analysis
     finally:
@@ -245,39 +284,45 @@ def analyze_drill(token: str = Depends(bearer_token)):
 # ============================================================
 # ANALYSIS PIPELINE
 # ============================================================
-def run_analysis_pipeline(drill) -> dict:
+def run_analysis_pipeline(drill, is_trial: bool) -> dict:
     mode = drill["mode"]
     duration = drill.get("duration_seconds") or 30
 
-    # 1. Get transcript
+    # 1. Transcript
     if mode == "text":
         transcript = drill["raw_text"] or ""
     else:
         transcript = transcribe_from_r2(drill["audio_url"])
 
-    # 2. Rule-based signals
+    # 2. Rule-based signals (free)
     signals = compute_signals(transcript, duration, mode)
 
-    # 3. LLM diagnosis
-    llm = llm_diagnose(transcript, signals, drill.get("question_type", "intro"))
+    # 3. Rule-based metrics (free)
+    metrics = compute_metrics(signals)
+
+    # 4. One LLM call — qualitative only
+    llm = llm_diagnose(
+        transcript=transcript,
+        signals=signals,
+        metrics=metrics,
+        question_type=drill.get("question_type", "intro"),
+        want_rewrite=not is_trial,   # only paid gets the executive rewrite
+    )
 
     return {
         "transcribed_text": transcript,
         "signals": signals,
-        "metrics": llm["metrics"],
+        "metrics": metrics,
         "diagnosis": llm["diagnosis"],
         "gap": llm["gap"],
         "coaching": llm["coaching"],
-        "before_after_rewrite": llm["before_after_rewrite"],
+        "before_after_rewrite": llm.get("before_after_rewrite"),
     }
 
 
 def transcribe_from_r2(audio_url: str) -> str:
-    """Download audio from R2, send to Groq Whisper."""
     if not audio_url:
         return ""
-
-    # Download from R2
     key = audio_url.split("/")[-1]
     key_path = f"drills/{key}"
     audio_bytes = download_from_r2(key_path)
@@ -287,7 +332,6 @@ def transcribe_from_r2(audio_url: str) -> str:
         path = f.name
 
     try:
-        # Use Groq (free tier) for Whisper transcription
         from groq import Groq
         client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         with open(path, "rb") as f:
@@ -306,13 +350,12 @@ def transcribe_from_r2(audio_url: str) -> str:
             pass
 
 
-# ─── Signals ───
+# ─── Signals (free) ───
 FILLERS = ["um", "uh", "like", "actually", "basically", "you know", "so", "well",
            "just", "really", "kind of", "sort of", "i mean", "right"]
 
 
 def compute_signals(transcript: str, duration: int, mode: str) -> dict:
-    import re
     words = [w for w in transcript.lower().split() if w]
     wc = len(words)
     duration = max(duration, 1)
@@ -334,7 +377,8 @@ def compute_signals(transcript: str, duration: int, mode: str) -> dict:
 
     filler_pct = round((total_fillers / wc) * 100, 1) if wc else 0
 
-    marker = re.search(r"\b(first|the point|what matters|the key|the main)\b", transcript, re.IGNORECASE)
+    marker = re.search(r"\b(first|the point|what matters|the key|the main)\b",
+                       transcript, re.IGNORECASE)
     if marker:
         prefix_words = len(transcript[:marker.start()].split())
         ttp = max(3, round((prefix_words / max(wc, 1)) * duration))
@@ -362,9 +406,45 @@ def compute_signals(transcript: str, duration: int, mode: str) -> dict:
     }
 
 
-# ─── LLM Diagnosis ───
-def llm_diagnose(transcript: str, signals: dict, question_type: str) -> dict:
-    """Uses the existing Gemini service."""
+# ─── Metrics (free, rule-based) ───
+def _clamp(v, lo=30, hi=98):
+    return max(lo, min(hi, round(v)))
+
+
+def compute_metrics(signals: dict) -> dict:
+    filler_pct = signals["filler_words"]["percentage"]
+    avg_sent = signals["sentences"]["average_length"]
+    longest = signals["sentences"]["longest"]
+    ttp = signals["main_point_delay_seconds"]
+    wpm = signals["words_per_minute"]
+    pauses = len(signals["long_pauses"])
+
+    clarity = 100 - (filler_pct * 4) - max(0, avg_sent - 18) * 1.5 - pauses * 3
+    structure = 100 - (ttp / 2) - max(0, longest - 30) * 1.2
+    impact = 100 - abs(wpm - 140) * 0.3 - (filler_pct * 2) - (ttp / 1.5)
+
+    clarity = _clamp(clarity)
+    structure = _clamp(structure)
+    impact = _clamp(impact)
+
+    overall = round(((clarity + structure + impact) / 3) / 10, 1)
+
+    return {
+        "clarity": clarity,
+        "structure": structure,
+        "impact": impact,
+        "overall_score": overall,
+    }
+
+
+# ─── LLM diagnosis (qualitative only) ───
+def llm_diagnose(transcript: str, signals: dict, metrics: dict,
+                 question_type: str, want_rewrite: bool) -> dict:
+    rewrite_field = ''
+    rewrite_example = ''
+    if want_rewrite:
+        rewrite_field = ',\n  "before_after_rewrite": { "executive_version": "A 2-3 sentence executive version of their answer" }'
+        rewrite_example = ',\n    "before_after_rewrite": {"executive_version": "Your executive version here."}'
 
     prompt = f"""You are an executive communication coach. Analyze the candidate's response.
 
@@ -373,16 +453,16 @@ QUESTION TYPE: {question_type}
 TRANSCRIPT:
 "{transcript}"
 
-SIGNALS:
-- Words per minute: {signals['words_per_minute']}
-- Filler words: {signals['filler_words']['total']} ({signals['filler_words']['percentage']}%)
-- Average sentence length: {signals['sentences']['average_length']} words
-- Longest sentence: {signals['sentences']['longest']} words
+COMPUTED METRICS (do not recompute these — just use them for context):
+- Clarity: {metrics['clarity']}/100
+- Structure: {metrics['structure']}/100
+- Impact: {metrics['impact']}/100
+- Fillers: {signals['filler_words']['total']} ({signals['filler_words']['percentage']}%)
 - Time to main point: {signals['main_point_delay_seconds']}s
+- Words per minute: {signals['words_per_minute']}
 
 Return ONLY a JSON object with this exact structure:
 {{
-  "metrics": {{ "clarity": 0-100, "structure": 0-100, "impact": 0-100 }},
   "diagnosis": {{
     "pattern_name": "Short memorable name (e.g. The Amplifier, The Rambler)",
     "pattern_description": "1-2 sentences describing the pattern"
@@ -393,20 +473,15 @@ Return ONLY a JSON object with this exact structure:
   }},
   "coaching": {{
     "one_thing_to_change": "One specific, actionable change"
-  }},
-  "before_after_rewrite": {{
-    "executive_version": "A 2-3 sentence executive version of their answer"
-  }}
+  }}{rewrite_field}
 }}
 
-Be specific. Cite exact phrases from the transcript."""
+Be specific. Cite exact phrases from the transcript. No markdown. JSON only."""
 
     result = call_gemini_api(prompt)
 
     if not result:
-        # Fallback if Gemini fails — return safe defaults
-        return {
-            "metrics": {"clarity": 60, "structure": 55, "impact": 50},
+        fallback = {
             "diagnosis": {
                 "pattern_name": "The Communicator",
                 "pattern_description": "You get your point across but could tighten the delivery."
@@ -418,9 +493,9 @@ Be specific. Cite exact phrases from the transcript."""
             "coaching": {
                 "one_thing_to_change": "Lead with the point"
             },
-            "before_after_rewrite": {
-                "executive_version": "Your executive version here."
-            }
         }
+        if want_rewrite:
+            fallback["before_after_rewrite"] = {"executive_version": "Your executive version here."}
+        return fallback
 
     return result
